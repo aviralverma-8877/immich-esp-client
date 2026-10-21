@@ -48,6 +48,7 @@ version in `docs/manifest.json`; commit both and GitHub Pages serves them.
 | BTN2 (IO36) | previous |
 | Touch (after calibration) | left third previous, middle pause, right third next |
 | Touch (uncalibrated) | any tap = next |
+| Portal > Device > *Re-run setup* | restart into the setup network once, keeping settings (e.g. to change WiFi) |
 | BOOT held 6 s | factory reset |
 | BTN1 + BTN2 held at power-up for 3 s | factory reset |
 

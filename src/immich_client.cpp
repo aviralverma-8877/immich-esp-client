@@ -185,6 +185,17 @@ bool fetchOrdered(const AppConfig& cfg, int& page, Asset* out, size_t max, size_
 
 }  // namespace
 
+// On an auth failure, say which key was sent so a stale saved key is obvious.
+void noteKey(const AppConfig& cfg, String& err) {
+  if (err.indexOf("HTTP 401") < 0) return;
+  if (cfg.apiKey.isEmpty()) {
+    err += " - no API key is saved";
+  } else {
+    err += " - the key in use starts with \"" + cfg.apiKey.substring(0, 4) + "\" (" + String(cfg.apiKey.length()) +
+           " characters)";
+  }
+}
+
 void begin() { gNetMutex = xSemaphoreCreateMutex(); }
 
 bool testConnection(const AppConfig& cfg, String& info) {
@@ -205,7 +216,10 @@ bool testConnection(const AppConfig& cfg, String& info) {
   meFilter["name"] = true;
   meFilter["email"] = true;
   JsonDocument me;
-  if (!getJson(cfg, "/users/me", meFilter, me, info)) return false;
+  if (!getJson(cfg, "/users/me", meFilter, me, info)) {
+    noteKey(cfg, info);
+    return false;
+  }
 
   String who = me["name"] | "";
   if (who.isEmpty()) who = me["email"] | "?";
@@ -225,8 +239,10 @@ bool fetchBatch(const AppConfig& cfg, int& page, Asset* out, size_t max, size_t&
     err = "Network busy";
     return false;
   }
-  if (cfg.order == Order::Random) return fetchRandom(cfg, out, max, count, err);
-  return fetchOrdered(cfg, page, out, max, count, err);
+  const bool ok = cfg.order == Order::Random ? fetchRandom(cfg, out, max, count, err)
+                                            : fetchOrdered(cfg, page, out, max, count, err);
+  if (!ok) noteKey(cfg, err);
+  return ok;
 }
 
 bool listSources(const AppConfig& cfg, Source type, String& json, String& err) {

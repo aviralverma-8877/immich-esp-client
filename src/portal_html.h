@@ -52,7 +52,7 @@ a{color:var(--accent)}
 <div id="form">
 <section>
 <h2><span class="n">1</span>WiFi network</h2>
-<div class="row"><span class="hint" id="scanNote">Looking for networks...</span><button class="link" onclick="scan()">Rescan</button></div>
+<div class="row"><span class="hint" id="scanNote">Looking for networks...</span><button class="link" onclick="scan(true)">Rescan</button></div>
 <ul id="nets"></ul>
 <label for="ssid">Network name</label>
 <input id="ssid" autocomplete="off" autocapitalize="none" placeholder="Pick above or type a hidden network">
@@ -92,9 +92,11 @@ let keySet=false;
 
 function bars(rssi){const n=rssi>-55?4:rssi>-67?3:rssi>-78?2:1;let h='';for(let i=1;i<=4;i++)h+='<i class="'+(i<=n?'on':'')+'" style="height:'+(i*3+2)+'px"></i>';return '<span class="bars">'+h+'</span>';}
 
-async function scan(){
+async function scan(fresh){
   $('scanNote').textContent='Looking for networks...';
-  let j=await api('/api/scan?refresh=1');
+  // A scan briefly takes the radio off the AP's channel, so the first list
+  // comes from the scan the frame made before starting its network.
+  let j=await api('/api/scan'+(fresh?'?refresh=1':''));
   for(let i=0;(j.scanning||j.offline)&&i<25;i++){await sleep(700);j=await api('/api/scan');}
   const list=(j.networks||[]).sort((a,b)=>b.rssi-a.rssi);
   $('scanNote').textContent=list.length?list.length+' networks found':'No networks found';
@@ -138,7 +140,7 @@ async function watch(){
     await sleep(1000);
   }
 }
-function retry(){$('progress').hidden=true;$('form').hidden=false;$('go').disabled=false;$('pActions').innerHTML='';scan();}
+function retry(){$('progress').hidden=true;$('form').hidden=false;$('go').disabled=false;$('pActions').innerHTML='';scan(true);}
 async function finish(){await post('/api/setup/finish');$('pState').innerHTML='<div class="big">Restarting...</div>';$('pActions').innerHTML='';}
 
 (async()=>{
@@ -292,6 +294,7 @@ a{color:var(--accent)}
 <button onclick="cmd('calibrate')">Calibrate touch</button>
 <button onclick="cmd('reload')">Reload photos</button>
 <button onclick="cmd('reboot')">Restart</button>
+<button onclick="cmd('setup')" title="Restart into the setup WiFi network, keeping all settings">Re-run setup</button>
 <button class="danger" onclick="if(confirm('Erase all settings including WiFi?'))cmd('factory')">Factory reset</button>
 </div>
 <label for="fw">Firmware update (.bin)</label>
@@ -412,6 +415,7 @@ async function cmd(c){
   if(!r.ok)note('devMsg',r.error||'Failed',false);
   else if(c==='calibrate')note('devMsg','Touch the arrows shown on the screen',true);
   else if(c==='reboot'||c==='factory')note('devMsg','Restarting...',true);
+  else if(c==='setup')note('devMsg','Restarting into setup mode - join the WiFi network shown on the frame',true);
   setTimeout(status,800);
 }
 

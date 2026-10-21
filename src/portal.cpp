@@ -1,13 +1,13 @@
 #include "portal.h"
 
 #include <ArduinoJson.h>
-#include <DNSServer.h>
 #include <Update.h>
 #include <WebServer.h>
 #include <WiFi.h>
 
 #include "app_config.h"
 #include "app_state.h"
+#include "captive_dns.h"
 #include "immich_client.h"
 #include "portal_html.h"
 
@@ -19,7 +19,7 @@ namespace portal {
 namespace {
 
 WebServer server(80);
-DNSServer dns;
+CaptiveDns dns;
 volatile bool gApMode = false;
 bool gDnsRunning = false;
 
@@ -50,7 +50,18 @@ bool foreignHost() {
   return host.length() && host != WiFi.softAPIP().toString();
 }
 
+// Build with -DCAPTIVE_DEBUG to trace what phones probe during setup.
+void logRequest() {
+#ifdef CAPTIVE_DEBUG
+  Serial.printf("[http] %s %s%s\n", server.method() == HTTP_GET ? "GET" : "POST", server.hostHeader().c_str(),
+                server.uri().c_str());
+#endif
+}
+
 bool authorized() {
+  // The setup AP has its own random WPA2 password shown only on the screen,
+  // and phone captive-portal sheets can't show a basic-auth prompt.
+  if (gApMode) return true;
   AppConfig cfg = config::get();
   if (cfg.adminPass.isEmpty() || server.authenticate("admin", cfg.adminPass.c_str())) return true;
   server.requestAuthentication(BASIC_AUTH, "Immich Frame");
@@ -91,6 +102,7 @@ bool parseBody(JsonDocument& doc) {
 }
 
 void handleRoot() {
+  logRequest();
   if (foreignHost()) return redirectToPortal();
   if (!authorized()) return;
   server.sendHeader("Cache-Control", "no-store");
@@ -139,6 +151,7 @@ void handleSetupPost() {
   if (in["serverUrl"].is<const char*>() && strlen(in["serverUrl"]))
     c.serverUrl = config::normalizeUrl(in["serverUrl"].as<String>());
   if (in["apiKey"].is<const char*>() && strlen(in["apiKey"])) c.apiKey = in["apiKey"].as<String>();
+    c.apiKey.trim();
   config::set(c);
 
   gSetupSsid = ssid;
@@ -231,6 +244,7 @@ void handlePostConfig() {
   // Secrets: an empty string means "keep the stored value".
   if (in["wifiPass"].is<const char*>() && strlen(in["wifiPass"])) c.wifiPass = in["wifiPass"].as<String>();
   if (in["apiKey"].is<const char*>() && strlen(in["apiKey"])) c.apiKey = in["apiKey"].as<String>();
+    c.apiKey.trim();
   if (in["adminPass"].is<const char*>() && strlen(in["adminPass"])) c.adminPass = in["adminPass"].as<String>();
   if (in["clearAdminPass"] | false) c.adminPass = "";
   if (in["hostname"].is<const char*>() && strlen(in["hostname"])) c.hostname = in["hostname"].as<String>();
@@ -341,6 +355,7 @@ void handleTest() {
   if (in["serverUrl"].is<const char*>() && strlen(in["serverUrl"]))
     c.serverUrl = config::normalizeUrl(in["serverUrl"].as<String>());
   if (in["apiKey"].is<const char*>() && strlen(in["apiKey"])) c.apiKey = in["apiKey"].as<String>();
+    c.apiKey.trim();
   if (in["insecureTls"].is<bool>()) c.insecureTls = in["insecureTls"];
 
   if (WiFi.status() != WL_CONNECTED) return sendError(200, "Not connected to WiFi yet - save WiFi settings first");
@@ -376,6 +391,7 @@ void handleCmd() {
   else if (c == "calibrate") cmd = state::Cmd::CalibrateTouch;
   else if (c == "reboot") cmd = state::Cmd::Reboot;
   else if (c == "factory") cmd = state::Cmd::FactoryReset;
+  else if (c == "setup") cmd = state::Cmd::SetupMode;
   if (cmd == state::Cmd::None) return sendError(400, "Unknown command");
   const state::Status s = state::get();  // before the command changes it
   state::post(cmd);
@@ -414,6 +430,7 @@ void handleUpdateUpload() {
 }
 
 void handleNotFound() {
+  logRequest();
   // In setup mode every unknown URL, including OS connectivity probes, lands
   // on the setup page.
   if (gApMode) return redirectToPortal();
@@ -423,6 +440,7 @@ void handleNotFound() {
 // Connectivity-check URLs. Answering anything other than the expected
 // "internet is fine" reply makes the OS pop up its captive-portal browser.
 void handleProbe() {
+  logRequest();
   if (gApMode && gSetup != SetupState::Connected) return redirectToPortal();
   // Outside setup (or once done) give the expected answers so phones stay quiet.
   const String uri = server.uri();
@@ -437,13 +455,13 @@ void handleProbe() {
 void task(void*) {
   for (;;) {
     if (gApMode && !gDnsRunning) {
-      dns.start(53, "*", WiFi.softAPIP());
+      dns.start(WiFi.softAPIP());
       gDnsRunning = true;
     } else if (!gApMode && gDnsRunning) {
       dns.stop();
       gDnsRunning = false;
     }
-    if (gDnsRunning) dns.processNextRequest();
+    if (gDnsRunning) dns.process();
     server.handleClient();
     serviceSetup();
     vTaskDelay(pdMS_TO_TICKS(2));

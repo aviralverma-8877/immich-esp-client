@@ -5,7 +5,7 @@
 // Shared between the slideshow (loop task) and the web portal task.
 namespace state {
 
-enum class Cmd : uint8_t { None, Next, Prev, TogglePause, Reload, CalibrateTouch, Reboot, FactoryReset, TestPattern };
+enum class Cmd : uint8_t { None, Next, Prev, TogglePause, Reload, CalibrateTouch, Reboot, FactoryReset, TestPattern, SetupMode };
 
 struct Status {
   bool apMode = false;

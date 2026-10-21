@@ -6,6 +6,7 @@
 
 #include <Arduino.h>
 #include <ESPmDNS.h>
+#include <Preferences.h>
 #include <WiFi.h>
 
 #include <deque>
@@ -152,6 +153,15 @@ void startAccessPoint(const AppConfig& cfg) {
   static const char kChars[] = "abcdefghjkmnpqrstuvwxyz23456789";
   String pass;
   for (int i = 0; i < 8; i++) pass += kChars[esp_random() % (sizeof(kChars) - 1)];
+
+  // Stop a failed station connection from retrying in the background: its
+  // channel hopping knocks phones off the AP. Then scan once, before the AP
+  // exists, so the setup page can list networks without another scan.
+  WiFi.setAutoReconnect(false);
+  WiFi.disconnect(false, false);
+  WiFi.mode(WIFI_STA);
+  const int found = WiFi.scanNetworks();
+  Serial.printf("[wifi] %d networks found\n", found);
 
   WiFi.mode(WIFI_AP_STA);
   bool up = WiFi.softAP(name, pass.c_str());
@@ -510,6 +520,17 @@ void handleCommands() {
         delay(800);  // let the HTTP response go out
         ESP.restart();
         break;
+      case state::Cmd::SetupMode: {
+        // One-shot flag: next boot opens the setup AP, settings are kept.
+        Preferences prefs;
+        prefs.begin("boot", false);
+        prefs.putBool("setup", true);
+        prefs.end();
+        ui::message("Restarting...", "into setup mode");
+        delay(800);
+        ESP.restart();
+        break;
+      }
       case state::Cmd::FactoryReset:
         ui::message("Factory reset", "Erasing settings...", "", "", TFT_RED);
         config::erase();
@@ -599,7 +620,13 @@ void setup() {
   }
 
   WiFi.persistent(false);
-  if (gCfg.wifiSsid.length() && connectStation(gCfg)) {
+  Preferences boot;
+  boot.begin("boot", false);
+  const bool forceSetup = boot.getBool("setup", false);
+  if (forceSetup) boot.remove("setup");
+  boot.end();
+
+  if (!forceSetup && gCfg.wifiSsid.length() && connectStation(gCfg)) {
     state::setAp(false, WiFi.localIP().toString());
     startMdns(gCfg);
     ui::splashStatus("Connected - " + WiFi.localIP().toString(), TFT_GREEN);
