@@ -2,6 +2,8 @@
 
 #include <tjpgd.h>
 
+#include "frame_buffer.h"
+
 namespace jpeg {
 namespace {
 
@@ -13,6 +15,7 @@ struct Ctx {
   bool ioError;
 
   TFT_eSPI* tft;
+  bool toBuffer;
   AbortFn abort;
   bool aborted;
 
@@ -72,6 +75,20 @@ int output(JDEC* jd, void* bitmap, JRECT* r) {
   ye = min(ye, c->scrH - 1);
   if (xs > xe || ys > ye) return 1;
 
+  if (c->toBuffer) {
+    for (int yy = ys; yy <= ye; yy++) {
+      int sy = (yy - c->dstY) * c->srcH / c->dstH - r->top;
+      const uint16_t* row = src + constrain(sy, 0, bh - 1) * bw;
+      uint16_t* p = c->buf;
+      for (int xx = xs; xx <= xe; xx++) {
+        int sx = (xx - c->dstX) * c->srcW / c->dstW - r->left;
+        *p++ = row[constrain(sx, 0, bw - 1)];
+      }
+      fb::putRow(yy, xs, c->buf, xe - xs + 1);
+    }
+    return 1;
+  }
+
   const int w = xe - xs + 1;
   const int rowsPerPush = max(1, (int)(kBufPixels / w));
   for (int y = ys; y <= ye; y += rowsPerPush) {
@@ -91,6 +108,19 @@ int output(JDEC* jd, void* bitmap, JRECT* r) {
   return 1;
 }
 
+// Clears only the letterbox bars so the previous image is painted over
+// rather than flashing to black.
+void clearBars(TFT_eSPI& tft, const Ctx& c) {
+  if (c.dstX > 0) {
+    tft.fillRect(0, 0, c.dstX, c.scrH, TFT_BLACK);
+    tft.fillRect(c.dstX + c.dstW, 0, c.scrW - c.dstX - c.dstW, c.scrH, TFT_BLACK);
+  }
+  if (c.dstY > 0) {
+    tft.fillRect(0, 0, c.scrW, c.dstY, TFT_BLACK);
+    tft.fillRect(0, c.dstY + c.dstH, c.scrW, c.scrH - c.dstY - c.dstH, TFT_BLACK);
+  }
+}
+
 const char* describe(JRESULT r) {
   switch (r) {
     case JDR_INP: return "stream ended early";
@@ -107,12 +137,13 @@ const char* describe(JRESULT r) {
 }  // namespace
 
 bool draw(TFT_eSPI& tft, Stream& in, int len, bool fill, AbortFn abort, String& err, bool& aborted,
-          bool& touched) {
+          bool& touched, bool toBuffer) {
   Ctx& c = gCtx;
   c.in = &in;
   c.remaining = len;
   c.ioError = false;
   c.tft = &tft;
+  c.toBuffer = toBuffer && fb::active();
   c.abort = abort;
   c.aborted = false;
   aborted = false;
@@ -134,7 +165,7 @@ bool draw(TFT_eSPI& tft, Stream& in, int len, bool fill, AbortFn abort, String& 
     }
     return false;
   }
-  touched = true;  // bars and blocks are drawn from here on
+  touched = !c.toBuffer;  // bars and blocks are drawn from here on
 
   c.scrW = tft.width();
   c.scrH = tft.height();
@@ -153,15 +184,10 @@ bool draw(TFT_eSPI& tft, Stream& in, int len, bool fill, AbortFn abort, String& 
   c.srcW = max(1, w >> scale);
   c.srcH = max(1, h >> scale);
 
-  // Clear only the letterbox bars so the previous image is painted over
-  // rather than flashing to black.
-  if (c.dstX > 0) {
-    tft.fillRect(0, 0, c.dstX, c.scrH, TFT_BLACK);
-    tft.fillRect(c.dstX + c.dstW, 0, c.scrW - c.dstX - c.dstW, c.scrH, TFT_BLACK);
-  }
-  if (c.dstY > 0) {
-    tft.fillRect(0, 0, c.scrW, c.dstY, TFT_BLACK);
-    tft.fillRect(0, c.dstY + c.dstH, c.scrW, c.scrH - c.dstY - c.dstH, TFT_BLACK);
+  if (c.toBuffer) {
+    fb::clear();  // letterbox bars
+  } else if (c.dstX > 0 || c.dstY > 0) {
+    clearBars(tft, c);
   }
 
   const bool swap = tft.getSwapBytes();

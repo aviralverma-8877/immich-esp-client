@@ -15,6 +15,11 @@ void applyPanel(uint8_t rotation, bool bgr, bool invert);
 // pushImage (the path photos take), for diagnosing colour problems by eye.
 void testPattern();
 
+// Boot splash: a pinwheel in Immich colours, the wordmark and a status line
+// that splashStatus() updates in place. Stays up until the first photo.
+void splash(const String& status);
+void splashStatus(const String& status, uint16_t color = 0x9CD3);
+
 // Full-screen message: a title and up to three lines of detail.
 void message(const String& title, const String& l1 = "", const String& l2 = "", const String& l3 = "",
              uint16_t titleColor = TFT_WHITE);

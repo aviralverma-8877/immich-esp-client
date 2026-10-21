@@ -14,7 +14,9 @@ using AbortFn = bool (*)();
 // Returns false with `err` set on failure; `aborted` is set if AbortFn fired.
 // `touched` reports whether anything was drawn: a JPEG rejected at the header
 // leaves the screen as it was.
+// With `toBuffer`, pixels go into fb:: (which must be active) and the screen
+// is never touched; the caller reveals the result with a transition.
 bool draw(TFT_eSPI& tft, Stream& in, int len, bool fill, AbortFn abort, String& err, bool& aborted,
-          bool& touched);
+          bool& touched, bool toBuffer = false);
 
 }  // namespace jpeg

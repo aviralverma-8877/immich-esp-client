@@ -29,6 +29,62 @@ void drawQr(esp_qrcode_handle_t qr) {
 
 }  // namespace
 
+// ---- splash -----------------------------------------------------------------
+
+namespace {
+
+constexpr uint16_t kSplashBg = 0x0861;  // #0c0e12
+constexpr int kLogo = 132;               // logo box, px
+int gStatusY;
+
+uint16_t rgb(uint32_t hex) { return tft.color565(hex >> 16, (hex >> 8) & 0xFF, hex & 0xFF); }
+
+// Five petals, each a circle joined to an off-centre base point, so together
+// they read as a pinwheel. Colours follow the Immich palette.
+void drawPinwheel(int x0, int y0) {
+  static const uint32_t kPetals[] = {0xFA2921, 0xED79B5, 0xFFB400, 0x1E83F7, 0x18C249};
+  const float cx = x0 + kLogo / 2.0f, cy = y0 + kLogo / 2.0f, d = 30, r = 22, twist = 9;
+  for (int i = 0; i < 5; i++) {
+    const float a = -HALF_PI + i * TWO_PI / 5;
+    const float px = cx + d * cosf(a), py = cy + d * sinf(a);                        // petal centre
+    const float bx = cx + twist * cosf(a - HALF_PI), by = cy + twist * sinf(a - HALF_PI);  // base
+    const uint16_t col = rgb(kPetals[i]);
+    tft.fillTriangle(bx, by, px + r * cosf(a + HALF_PI), py + r * sinf(a + HALF_PI),
+                     px + r * cosf(a - HALF_PI), py + r * sinf(a - HALF_PI), col);
+    tft.fillCircle(px, py, r, col);
+  }
+  tft.fillCircle(cx, cy, 7, kSplashBg);  // small hub
+}
+
+}  // namespace
+
+void splash(const String& status) {
+  tft.fillScreen(kSplashBg);
+  const int w = tft.width(), h = tft.height();
+  const bool portrait = h > w;
+  const int logoY = portrait ? 46 : 14;
+  drawPinwheel((w - kLogo) / 2, logoY);
+  const int textY = logoY + kLogo + (portrait ? 26 : 10);
+
+  tft.setTextDatum(TC_DATUM);
+  tft.setTextColor(TFT_WHITE, kSplashBg);
+  tft.drawString("immich", w / 2, textY, 4);
+  tft.setTextColor(rgb(0x8A93A6), kSplashBg);
+  tft.drawString("photo frame", w / 2, textY + 28, 2);
+  tft.setTextDatum(TL_DATUM);
+  gStatusY = textY + (portrait ? 70 : 52);
+  splashStatus(status);
+}
+
+void splashStatus(const String& status, uint16_t color) {
+  const int w = tft.width();
+  tft.fillRect(0, gStatusY - 2, w, 20, kSplashBg);
+  tft.setTextDatum(TC_DATUM);
+  tft.setTextColor(color, kSplashBg);
+  tft.drawString(status, w / 2, gStatusY, 2);
+  tft.setTextDatum(TL_DATUM);
+}
+
 int qrCode(const String& text, int y, int maxPx) {
   gQrTop = y;
   gQrMaxPx = maxPx;

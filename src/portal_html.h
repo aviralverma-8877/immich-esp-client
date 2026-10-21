@@ -227,6 +227,16 @@ a{color:var(--accent)}
 <div><label for="rotation">Orientation</label>
 <select id="rotation"><option value="0">Portrait</option><option value="2">Portrait (flipped)</option><option value="1">Landscape</option><option value="3">Landscape (flipped)</option></select></div>
 </div>
+<label for="transition">Transition</label>
+<select id="transition">
+<option value="random">Random</option><option value="none">None (draw while loading)</option>
+<option value="wipe-right">Wipe right</option><option value="wipe-left">Wipe left</option>
+<option value="wipe-down">Wipe down</option><option value="wipe-up">Wipe up</option>
+<option value="slide-left">Slide in from right</option><option value="slide-right">Slide in from left</option>
+<option value="slide-down">Slide in from top</option><option value="slide-up">Slide in from bottom</option>
+<option value="blinds">Blinds</option><option value="dissolve">Dissolve</option>
+<option value="box-out">Box out</option><option value="diagonal">Diagonal</option>
+</select>
 <label class="check"><input id="showDate" type="checkbox"> Show the date the photo was taken</label>
 <div class="btns"><button class="primary" onclick="save('show')">Save slideshow</button></div>
 <div class="msg" id="showMsg"></div>
@@ -300,7 +310,7 @@ function esc(s){return String(s).replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','
 async function load(){
   cfg=await api('/api/config');
   $('source').value=cfg.source;$('order').value=cfg.order;$('interval').value=cfg.intervalSec;
-  $('fill').value=cfg.fill?'1':'0';$('rotation').value=String(cfg.rotation);$('showDate').checked=cfg.showDate;
+  $('fill').value=cfg.fill?'1':'0';$('rotation').value=String(cfg.rotation);$('showDate').checked=cfg.showDate;$('transition').value=cfg.transition||'random';
   $('colorBgr').value=cfg.colorBgr?'1':'0';$('colorInvert').value=cfg.colorInvert?'1':'0';
   $('serverUrl').value=cfg.serverUrl||'';$('apiKey').placeholder=cfg.apiKeySet?'Saved (leave blank to keep)':'Paste API key';
   $('insecureTls').checked=cfg.insecureTls;$('ssid').value=cfg.wifiSsid||'';
@@ -335,7 +345,7 @@ async function save(part){
   const b={},msg={show:'showMsg',immich:'immichMsg',wifi:'wifiMsg',device:'devMsg'}[part];
   if(part==='show'){
     const t=$('source').value;b.source=t;b.order=$('order').value;b.intervalSec=parseInt($('interval').value)||30;
-    b.fill=$('fill').value==='1';b.rotation=parseInt($('rotation').value);b.showDate=$('showDate').checked;
+    b.fill=$('fill').value==='1';b.rotation=parseInt($('rotation').value);b.showDate=$('showDate').checked;b.transition=$('transition').value;
     if(['album','person','tag'].includes(t)){
       const o=$('item').selectedOptions[0];
       if(!o||!o.value){note(msg,'Pick an item from the list first',false);return;}

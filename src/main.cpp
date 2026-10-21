@@ -16,6 +16,8 @@
 #include "immich_client.h"
 #include "jpeg_stream.h"
 #include "portal.h"
+#include "frame_buffer.h"
+#include "transitions.h"
 
 namespace {
 
@@ -31,6 +33,7 @@ constexpr uint32_t kApRetryStaMs = 60000;
 constexpr uint32_t kRetryAfterErrorMs = 30000;
 constexpr size_t kBatchSize = 20;
 constexpr size_t kHistorySize = 20;
+constexpr int kMaxQuickSkips = 8;  // consecutive unusable previews tried back to back
 
 // ---------------------------------------------------------------- inputs ----
 
@@ -111,6 +114,14 @@ void pollInputs() {
   pollTouch();
 }
 
+// While prefetching, only commands that need the screen or change what's
+// shown interrupt; "next" simply waits for the photo being prepared.
+bool abortPrefetch() {
+  pollInputs();
+  state::Cmd c = state::peek();
+  return c != state::Cmd::None && c != state::Cmd::Next && c != state::Cmd::TogglePause;
+}
+
 // Called between decoded JPEG blocks: lets next/prev interrupt a slow image.
 bool abortDecode() {
   pollInputs();
@@ -154,7 +165,7 @@ void startAccessPoint(const AppConfig& cfg) {
 }
 
 bool connectStation(const AppConfig& cfg) {
-  ui::message("Connecting", "WiFi: " + cfg.wifiSsid);
+  ui::splash("Connecting to " + cfg.wifiSsid + "...");
   WiFi.mode(WIFI_STA);
   WiFi.setHostname(cfg.hostname.c_str());
   WiFi.setAutoReconnect(true);
@@ -227,6 +238,23 @@ void showWaiting() {
   showMessageOnce("Waiting for photos", "Status and details at", "http://" + WiFi.localIP().toString());
 }
 
+// The next photo, decoded into fb:: while the current one is on screen, so
+// next/timer only has to run the transition.
+Asset gReady;
+bool gHaveReady = false;
+// A photo taken from the queue but not shown (its prefetch was interrupted or
+// its decode discarded); picked again before the queue moves on.
+Asset gPending;
+bool gHavePending = false;
+
+void dropReady(bool keepForLater) {
+  if (gHaveReady && keepForLater) {
+    gPending = gReady;
+    gHavePending = true;
+  }
+  gHaveReady = false;
+}
+
 void resetSlideshow() {
   gQueueLen = gQueuePos = 0;
   gPage = 1;
@@ -234,31 +262,143 @@ void resetSlideshow() {
   gBack = 0;
   gFailures = 0;
   gNextAt = 0;
+  dropReady(false);
+  gHavePending = false;
 }
 
-bool drawAsset(const Asset& a, String& err, bool& aborted, bool& touched) {
-  aborted = false;
-  touched = false;
+bool wantBuffer() { return fx::fromName(gCfg.transition) != fx::Effect::None; }
+
+// Over HTTPS each TLS handshake needs ~40 KB, so the buffer can't stay
+// allocated between photos and there is no prefetch.
+bool keepBuffer() { return !gCfg.serverUrl.startsWith("https://"); }
+
+bool ensureBuffer() {
+  if (fb::active() && fb::width() == tft.width() && fb::height() == tft.height()) return true;
+  fb::end();
+  if (!wantBuffer()) return false;
+  if (fb::begin(tft.width(), tft.height())) return true;
+  log_w("no memory for transition buffer (%u free)", ESP.getFreeHeap());
+  return false;
+}
+
+// Downloads and decodes one preview: into the buffer when one is available
+// (screen untouched), otherwise straight onto the panel.
+bool loadAsset(const Asset& a, bool prefetch, String& err, bool& aborted, bool& touched, bool& buffered) {
+  aborted = touched = buffered = false;
   digitalWrite(kPinLed, HIGH);
   bool ok = immich::fetchPreview(gCfg, a.id, [&](Stream& in, int len, String& e) {
-    bool drawn = jpeg::draw(tft, in, len, gCfg.fill, abortDecode, e, aborted, touched);
+    // Allocated after the response headers, i.e. after any TLS handshake.
+    buffered = ensureBuffer();
+    if (prefetch && !buffered) {
+      e = "no buffer";
+      return false;
+    }
+    bool drawn = jpeg::draw(tft, in, len, gCfg.fill, prefetch ? abortPrefetch : abortDecode, e, aborted,
+                            touched, buffered);
     if (touched) gScreenMessage = "";
     return drawn;
   }, err);
   digitalWrite(kPinLed, LOW);
-  if (ok) {
-    if (gCfg.showDate) ui::caption(ui::formatDate(a.date));
-    ui::pausedBadge(gPaused);
-  }
   return ok;
+}
+
+void finishShowing(const Asset& a, bool fromBuffer) {
+  if (fromBuffer) {
+    gScreenMessage = "";
+    fx::run(tft, fx::resolve(fx::fromName(gCfg.transition)));
+    if (!keepBuffer()) fb::end();
+  }
+  if (gCfg.showDate) ui::caption(ui::formatDate(a.date));
+  ui::pausedBadge(gPaused);
+  state::setShowing(a.id, a.date);
+  gFailures = 0;
+  gNextAt = millis() + gCfg.intervalSec * 1000UL;
+}
+
+void recordSkip(const Asset& a, const String& err) {
+  // Errors go to the portal only; the screen keeps the last good photo.
+  log_w("asset %s: %s", a.id, err.c_str());
+  state::setError(String("Skipped ") + a.id + ": " + err);
+  state::countSkipped();
+  gFailures++;
+}
+
+// Next unseen asset, refilling the queue from Immich when it runs out.
+// `quiet` (prefetching) leaves the screen and the timer alone on errors.
+bool pickFresh(Asset& out, bool quiet) {
+  if (gHavePending) {
+    out = gPending;
+    gHavePending = false;
+    return true;
+  }
+  if (gQueuePos >= gQueueLen) {
+    String err;
+    gQueuePos = 0;
+    if (!immich::fetchBatch(gCfg, gPage, gQueue, kBatchSize, gQueueLen, err)) {
+      gQueueLen = 0;
+      state::setError("Loading photo list: " + err);
+      log_w("fetchBatch: %s", err.c_str());
+      if (!quiet) {
+        showWaiting();
+        gNextAt = millis() + kRetryAfterErrorMs;
+      }
+      return false;
+    }
+    if (gQueueLen == 0) {
+      state::setError("No photos found for this selection");
+      if (!quiet) {
+        showWaiting();
+        gNextAt = millis() + kRetryAfterErrorMs * 2;
+      }
+      return false;
+    }
+  }
+  out = gQueue[gQueuePos++];
+  return true;
+}
+
+void pushHistory(const Asset& a) {
+  gHistory.push_back(a);
+  if (gHistory.size() > kHistorySize) gHistory.pop_front();
+}
+
+// Decodes the upcoming photo off-screen, skipping unusable previews.
+void prefetchNext() {
+  if (gHaveReady || gBack > 0 || !fb::active() || !keepBuffer()) return;
+  for (int attempt = 0; attempt < kMaxQuickSkips; attempt++) {
+    Asset a;
+    if (!pickFresh(a, true)) return;
+    String err;
+    bool aborted, touched, buffered;
+    if (loadAsset(a, true, err, aborted, touched, buffered)) {
+      gReady = a;
+      gHaveReady = true;
+      return;
+    }
+    if (aborted || !buffered) {  // a command wants the loop, or the buffer went away
+      gPending = a;
+      gHavePending = true;
+      return;
+    }
+    recordSkip(a, err);
+  }
 }
 
 // step: +1 next, -1 previous, 0 redraw the current photo.
 void advance(int step) {
   gShowingPattern = false;
+
+  // Fast path: the next photo is already decoded.
+  if (step > 0 && gBack == 0 && gHaveReady && fb::active()) {
+    gHaveReady = false;
+    pushHistory(gReady);
+    finishShowing(gReady, true);
+    prefetchNext();
+    return;
+  }
+
   Asset asset;
   bool fresh = false;
-
   if (step < 0) {
     if (gBack + 1 >= gHistory.size()) return;  // nothing older
     gBack++;
@@ -270,59 +410,46 @@ void advance(int step) {
     gBack--;
     asset = gHistory[gHistory.size() - 1 - gBack];
   } else {
-    if (gQueuePos >= gQueueLen) {
-      String err;
-      gQueuePos = 0;
-      if (!immich::fetchBatch(gCfg, gPage, gQueue, kBatchSize, gQueueLen, err)) {
-        gQueueLen = 0;
-        state::setError("Loading photo list: " + err);
-        log_w("fetchBatch: %s", err.c_str());
-        showWaiting();
-        gNextAt = millis() + kRetryAfterErrorMs;
-        return;
-      }
-      if (gQueueLen == 0) {
-        state::setError("No photos found for this selection");
-        showWaiting();
-        gNextAt = millis() + kRetryAfterErrorMs * 2;
-        return;
-      }
-    }
-    asset = gQueue[gQueuePos++];
+    if (!pickFresh(asset, false)) return;
     fresh = true;
   }
 
+  dropReady(true);  // the buffer is about to be overwritten
   String err;
-  bool aborted, touched;
-  if (drawAsset(asset, err, aborted, touched)) {
-    gFailures = 0;
-    if (fresh) {
-      gHistory.push_back(asset);
-      if (gHistory.size() > kHistorySize) gHistory.pop_front();
-    }
-    state::setShowing(asset.id, asset.date);
-    gNextAt = millis() + gCfg.intervalSec * 1000UL;
+  bool aborted, touched, buffered;
+  if (loadAsset(asset, false, err, aborted, touched, buffered)) {
+    if (fresh) pushHistory(asset);
+    finishShowing(asset, buffered);
+    prefetchNext();
     return;
   }
-  if (aborted) return;  // a pending command takes over
+  if (aborted) {
+    if (fresh) {
+      gPending = asset;
+      gHavePending = true;
+    }
+    return;  // a pending command takes over
+  }
 
-  // Errors go to the portal only; the screen keeps the last good photo.
-  log_w("asset %s: %s", asset.id, err.c_str());
-  state::setError(String("Skipped ") + asset.id + ": " + err);
-  state::countSkipped();
-  gFailures++;
+  recordSkip(asset, err);
   if (touched && !gHistory.empty()) {
-    // The failed image got partly drawn; put the current photo back.
-    bool redrawAborted, redrawTouched;
+    // Drawn straight to the panel and failed part way: put the current photo back.
     String redrawErr;
-    if (!drawAsset(gHistory[gHistory.size() - 1 - gBack], redrawErr, redrawAborted, redrawTouched) &&
-        !redrawAborted)
+    bool a2, t2, b2;
+    const Asset& cur = gHistory[gHistory.size() - 1 - gBack];
+    if (loadAsset(cur, false, redrawErr, a2, t2, b2)) {
+      if (b2) fx::run(tft, fx::Effect::WipeDown);
+    } else if (!a2) {
       log_w("redraw: %s", redrawErr.c_str());
+    }
   } else if (gHistory.empty()) {
     showWaiting();
   }
-  // Skip ahead quickly, but back off if nothing is working.
-  gNextAt = millis() + (gFailures >= 5 ? kRetryAfterErrorMs : 1000);
+  // A preview rejected at its header costs little, so try the next one right
+  // away: otherwise next/prev presses seem to do nothing on a library with
+  // many broken previews. Back off once nothing is working.
+  if (fresh && !touched && gFailures < kMaxQuickSkips) return advance(1);
+  gNextAt = millis() + (gFailures >= kMaxQuickSkips ? kRetryAfterErrorMs : 1000);
 }
 
 void calibrateTouch() {
@@ -404,8 +531,12 @@ void applyConfigChanges() {
   const bool rotated = next.rotation != gCfg.rotation;
   const bool colorChanged = next.colorBgr != gCfg.colorBgr || next.colorInvert != gCfg.colorInvert;
   const bool intervalChanged = next.intervalSec != gCfg.intervalSec;
+  const String prevTransition = gCfg.transition;
   gCfg = next;
 
+  const bool transitionChanged = next.transition != prevTransition;
+  if (rotated || lookChanged || transitionChanged) dropReady(true);  // decoded for the old settings
+  if (rotated || !wantBuffer()) fb::end();
   if (rotated || colorChanged) {
     ui::applyPanel(gCfg.rotation, gCfg.colorBgr, gCfg.colorInvert);
     if (rotated) gTouchCalibrated = false;
@@ -466,8 +597,9 @@ void setup() {
   if (gCfg.wifiSsid.length() && connectStation(gCfg)) {
     state::setAp(false, WiFi.localIP().toString());
     startMdns(gCfg);
-    ui::message("Connected", WiFi.localIP().toString(), "http://" + gCfg.hostname + ".local", "", TFT_GREEN);
-    delay(2000);
+    ui::splashStatus("Connected - " + WiFi.localIP().toString(), TFT_GREEN);
+    delay(1500);
+    ui::splashStatus("Loading photos...");  // the first photo replaces the splash
   } else {
     startAccessPoint(gCfg);
   }
