@@ -17,6 +17,8 @@ struct Status {
   uint32_t lastErrorAt = 0;  // millis() when lastError was set
   uint32_t shown = 0;
   uint32_t skipped = 0;
+  bool loading = false;    // a preview is downloading/decoding right now
+  bool nextReady = false;  // the next photo is decoded and waiting
 };
 
 void begin();
@@ -34,5 +36,7 @@ void setPaused(bool paused);
 void setShowing(const char* id, const char* date);
 void setError(const String& err);
 void countSkipped();
+void setLoading(bool loading);
+void setNextReady(bool ready);
 
 }  // namespace state

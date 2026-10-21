@@ -1,8 +1,14 @@
 # Immich Frame (ESP32)
 
 Firmware for the *ESP32 RJ9 Adapter* board (ESP32-WROOM-32, ST7789 240x320
-TFT on a shared SPI bus) that shows an Immich slideshow, configured from a web portal.
+TFT on a shared SPI bus) that shows an Immich slideshow with random transitions,
+configured from a web portal.
 The board's EasyEDA Pro project is in `ESP32-EasyEDA/`.
+
+## Install from the browser
+
+Open **https://aviralverma-8877.github.io/immich-esp-client/** in Chrome or
+Edge, plug the frame in over USB and press *Connect*. No toolchain needed.
 
 ## Build and flash
 
@@ -15,6 +21,10 @@ Optional first-boot defaults go in `include/secrets.h` (copy
 `include/secrets.example.h`). Anything saved in the portal overrides them.
 Later updates can be uploaded from the portal (Device > Firmware update) using
 `.pio/build/immich-frame/firmware.bin`.
+
+To refresh the web installer, run `pio run -e release`. It builds without
+`include/secrets.h` and writes `docs/firmware/immich-frame.bin` plus the
+version in `docs/manifest.json`; commit both and GitHub Pages serves them.
 
 ## First run
 

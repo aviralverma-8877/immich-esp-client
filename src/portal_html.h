@@ -200,6 +200,7 @@ a{color:var(--accent)}
 <button onclick="cmd('pause')" id="pauseBtn" title="Pause / resume">&#10073;&#10073;</button>
 <button onclick="cmd('next')" title="Next">&#9654;</button>
 </div>
+<div class="msg" id="nowMsg"></div>
 </section>
 
 <section>
@@ -387,8 +388,27 @@ async function scan(){
   note('wifiMsg',r.length+' networks found - pick one from the Network field',true);
 }
 
+let nextWatch=0;
+// After "next": if the photo wasn't prepared yet, say so until it appears.
+async function watchNext(before){
+  const id=++nextWatch;
+  for(let i=0;i<60&&id===nextWatch;i++){
+    await new Promise(f=>setTimeout(f,500));
+    const s=await api('/api/status');
+    if(s.assetId&&s.assetId!==before){note('nowMsg','Showing the next photo',true);setTimeout(()=>{if(id===nextWatch)$('nowMsg').textContent='';},2500);status();return;}
+  }
+  if(id===nextWatch)note('nowMsg','Still working on it - check the last error below',false);
+}
+
 async function cmd(c){
   const r=await post('/api/cmd?c='+c);
+  if(r.ok&&(c==='next'||c==='prev')){
+    if(c==='next'&&!r.nextReady)note('nowMsg','Downloading the next photo... it will appear in a few seconds',true);
+    else if(c==='prev')note('nowMsg','Loading the previous photo...',true);
+    else $('nowMsg').textContent='';
+    watchNext(r.assetId);
+    return;
+  }
   if(!r.ok)note('devMsg',r.error||'Failed',false);
   else if(c==='calibrate')note('devMsg','Touch the arrows shown on the screen',true);
   else if(c==='reboot'||c==='factory')note('devMsg','Restarting...',true);
@@ -410,7 +430,7 @@ async function status(){
   const rows=[];
   if(s.apMode)rows.push(['Mode','Setup access point - connect it to your WiFi below']);
   if(s.assetId)rows.push(['Photo',(s.assetDate?esc(s.assetDate)+' &middot; ':'')+'<a target="_blank" rel="noopener" href="'+esc(s.serverUrl)+'/photos/'+esc(s.assetId)+'">open in Immich</a>']);
-  rows.push(['State',s.paused?'Paused':'Playing']);
+  rows.push(['State',(s.paused?'Paused':'Playing')+(s.loading?' &middot; downloading a photo':s.nextReady?' &middot; next photo ready':'')]);
   if(s.lastError)rows.push(['Last error','<span class="err">'+esc(s.lastError)+'</span> <span class="hint">('+ago(s.lastErrorAgo)+')</span>']);
   rows.push(['Shown',s.shown+' photos since start'+(s.skipped?' &middot; '+s.skipped+' skipped':'')]);
   rows.push(['Network',(s.ssid?esc(s.ssid)+' ('+s.rssi+' dBm) &middot; ':'')+esc(s.ip)]);

@@ -283,6 +283,8 @@ void handleStatus() {
   if (s.lastError.length()) d["lastErrorAgo"] = (millis() - s.lastErrorAt) / 1000;
   d["shown"] = s.shown;
   d["skipped"] = s.skipped;
+  d["loading"] = s.loading;
+  d["nextReady"] = s.nextReady;
   d["serverUrl"] = c.serverUrl;
   d["uptime"] = millis() / 1000;
   d["freeHeap"] = ESP.getFreeHeap();
@@ -375,9 +377,13 @@ void handleCmd() {
   else if (c == "reboot") cmd = state::Cmd::Reboot;
   else if (c == "factory") cmd = state::Cmd::FactoryReset;
   if (cmd == state::Cmd::None) return sendError(400, "Unknown command");
+  const state::Status s = state::get();  // before the command changes it
   state::post(cmd);
   JsonDocument out;
   out["ok"] = true;
+  out["nextReady"] = s.nextReady;
+  out["loading"] = s.loading;
+  out["assetId"] = s.assetId;
   sendJson(200, out);
 }
 

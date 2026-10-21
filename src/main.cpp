@@ -253,6 +253,7 @@ void dropReady(bool keepForLater) {
     gHavePending = true;
   }
   gHaveReady = false;
+  state::setNextReady(false);
 }
 
 void resetSlideshow() {
@@ -286,6 +287,7 @@ bool ensureBuffer() {
 bool loadAsset(const Asset& a, bool prefetch, String& err, bool& aborted, bool& touched, bool& buffered) {
   aborted = touched = buffered = false;
   digitalWrite(kPinLed, HIGH);
+  state::setLoading(true);
   bool ok = immich::fetchPreview(gCfg, a.id, [&](Stream& in, int len, String& e) {
     // Allocated after the response headers, i.e. after any TLS handshake.
     buffered = ensureBuffer();
@@ -299,6 +301,7 @@ bool loadAsset(const Asset& a, bool prefetch, String& err, bool& aborted, bool& 
     return drawn;
   }, err);
   digitalWrite(kPinLed, LOW);
+  state::setLoading(false);
   return ok;
 }
 
@@ -373,6 +376,7 @@ void prefetchNext() {
     if (loadAsset(a, true, err, aborted, touched, buffered)) {
       gReady = a;
       gHaveReady = true;
+      state::setNextReady(true);
       return;
     }
     if (aborted || !buffered) {  // a command wants the loop, or the buffer went away
@@ -391,6 +395,7 @@ void advance(int step) {
   // Fast path: the next photo is already decoded.
   if (step > 0 && gBack == 0 && gHaveReady && fb::active()) {
     gHaveReady = false;
+    state::setNextReady(false);
     pushHistory(gReady);
     finishShowing(gReady, true);
     prefetchNext();

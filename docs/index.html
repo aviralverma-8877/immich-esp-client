@@ -1,0 +1,125 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Immich Frame Installer</title>
+<meta name="description" content="Flash the Immich Frame firmware to an ESP32 photo frame straight from Chrome or Edge.">
+<script type="module" src="https://unpkg.com/esp-web-tools@10/dist/web/install-button.js?module"></script>
+<style>
+:root{--bg:#f6f7f9;--card:#fff;--fg:#151a23;--muted:#5d6678;--line:#e1e5ec;--accent:#4250af;--accent-fg:#fff;--warn:#9a5b00;--code:#eef0f5}
+@media (prefers-color-scheme:dark){:root{--bg:#0c0e12;--card:#151922;--fg:#e8ebf1;--muted:#9aa3b5;--line:#262c39;--accent:#8c9cff;--accent-fg:#0c0e12;--warn:#ffb74d;--code:#1d2230}}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--fg);font:16px/1.55 system-ui,-apple-system,"Segoe UI",Roboto,sans-serif}
+main{max-width:760px;margin:0 auto;padding:32px 16px 48px}
+header{display:flex;gap:20px;align-items:center;margin-bottom:28px}
+header svg{flex:0 0 auto}
+h1{font-size:30px;line-height:1.2;margin:0}
+.tag{color:var(--muted);margin:6px 0 0}
+section{background:var(--card);border:1px solid var(--line);border-radius:14px;padding:20px 22px;margin-bottom:16px}
+h2{font-size:18px;margin:0 0 10px}
+p{margin:8px 0}
+ol,ul{margin:8px 0;padding-left:22px}
+li{margin:6px 0}
+.install{display:flex;flex-wrap:wrap;gap:16px;align-items:center}
+.install .ver{color:var(--muted);font-size:14px}
+esp-web-install-button{--esp-tools-button-color:var(--accent);--esp-tools-button-text-color:var(--accent-fg);--esp-tools-button-border-radius:10px}
+.note{color:var(--warn)}
+code{background:var(--code);padding:1px 6px;border-radius:6px;font-size:14px}
+a{color:var(--accent)}
+.muted{color:var(--muted);font-size:14px}
+table{border-collapse:collapse;width:100%;font-size:15px}
+td{border-top:1px solid var(--line);padding:7px 6px;vertical-align:top}
+td:first-child{white-space:nowrap;color:var(--muted);width:1%}
+footer{color:var(--muted);font-size:13px;text-align:center;margin-top:24px}
+</style>
+</head>
+<body>
+<main>
+<header>
+  <svg width="72" height="72" viewBox="0 0 132 132" aria-hidden="true">
+    <g id="petals"></g>
+  </svg>
+  <div>
+    <h1>Immich Frame</h1>
+    <p class="tag">A small ESP32 photo frame that shows a slideshow from your own Immich server.</p>
+  </div>
+</header>
+
+<section>
+  <h2>Install</h2>
+  <div class="install">
+    <esp-web-install-button manifest="./manifest.json">
+      <span slot="unsupported" class="note">Your browser can't talk to USB devices. Open this page in Chrome or Edge on a computer.</span>
+      <span slot="not-allowed" class="note">Web Serial needs a secure page: open this site over https.</span>
+    </esp-web-install-button>
+    <span class="ver" id="ver"></span>
+  </div>
+  <p class="muted">Plug the frame in over USB-C, press <b>Connect</b>, pick the serial port (usually "USB-SERIAL CH340") and choose <b>Install</b>. Erasing the device on first install is recommended.</p>
+</section>
+
+<section>
+  <h2>Before you start</h2>
+  <ul>
+    <li><b>Hardware:</b> the ESP32 RJ9 Adapter board (ESP32-WROOM-32, 4 MB flash) with a 240&times;320 ST7789 display. Other ESP32 + ST7789 builds with the same wiring also work.</li>
+    <li><b>Browser:</b> Chrome or Edge on Windows, macOS, Linux or ChromeOS. Phones and Firefox/Safari can't flash.</li>
+    <li><b>Cable:</b> a USB-C cable that carries data, not a charge-only one.</li>
+    <li><b>Driver:</b> if no serial port shows up on Windows or macOS, install the <a href="https://www.wch-ic.com/downloads/CH341SER_EXE.html" target="_blank" rel="noopener">CH340 USB driver</a>.</li>
+  </ul>
+</section>
+
+<section>
+  <h2>After installing</h2>
+  <ol>
+    <li>The frame starts a setup WiFi network called <code>ImmichFrame-XXXX</code> and shows a QR code. Scan it with your phone to join.</li>
+    <li>The setup page opens by itself (or go to <code>http://192.168.4.1</code>). Pick your home WiFi, enter your Immich server URL, for example <code>http://192.168.1.10:2283</code>, and an API key.</li>
+    <li>Press <b>Connect</b>. The frame checks the WiFi and your Immich login, shows its new address and restarts.</li>
+    <li>Open that address (or <code>http://immich-frame.local</code>) to choose what to show: all photos, an album, a person, a tag or favourites, plus order, interval, transitions and orientation.</li>
+  </ol>
+</section>
+
+<section>
+  <h2>Immich checklist</h2>
+  <table>
+    <tr><td>API key</td><td>Create one under <i>Account Settings &rarr; API Keys</i>. It needs read access to assets, albums, people, tags and your user.</td></tr>
+    <tr><td>Previews</td><td>The frame shows Immich's preview images, which must be JPEG (the default, under <i>Administration &rarr; Settings &rarr; Image</i>).</td></tr>
+    <tr><td>Skipped photos</td><td>If the portal reports photos skipped as "not a valid JPEG", those preview files are damaged on the server. Regenerate them with <i>Administration &rarr; Jobs &rarr; Generate Thumbnails &rarr; All</i>.</td></tr>
+    <tr><td>Network</td><td>The frame uses 2.4 GHz WiFi and must be able to reach the server's address.</td></tr>
+  </table>
+</section>
+
+<section>
+  <h2>Controls and troubleshooting</h2>
+  <table>
+    <tr><td>BTN1</td><td>Next photo; hold for 1.2 s to pause or resume.</td></tr>
+    <tr><td>BTN2</td><td>Previous photo.</td></tr>
+    <tr><td>Factory reset</td><td>Hold BOOT for 6 s, or hold BTN1 + BTN2 for 3 s while powering on.</td></tr>
+    <tr><td>Wrong colours</td><td>In the portal use <i>Display colours &rarr; Show test pattern</i> and switch colour order or inversion until the bars match their labels.</td></tr>
+    <tr><td>Can't connect</td><td>Close other serial monitors (Arduino, PlatformIO) using the port. If flashing still fails to start, hold BOOT while pressing Connect.</td></tr>
+    <tr><td>Updates</td><td>Run this installer again, or upload a new firmware file from the portal's Device section.</td></tr>
+  </table>
+</section>
+
+<footer>
+  Source, schematics and build instructions on <a href="https://github.com/aviralverma-8877/immich-esp-client">GitHub</a>.
+  Unofficial community project, not affiliated with Immich.
+</footer>
+</main>
+<script>
+// Same five-petal pinwheel the frame shows while it boots.
+(function(){
+  const colors=['#FA2921','#ED79B5','#FFB400','#1E83F7','#18C249'];
+  const c=66,d=30,r=22,tw=9,g=document.getElementById('petals');
+  let svg='';
+  colors.forEach((col,i)=>{
+    const a=-Math.PI/2+i*2*Math.PI/5,px=c+d*Math.cos(a),py=c+d*Math.sin(a);
+    const bx=c+tw*Math.cos(a-Math.PI/2),by=c+tw*Math.sin(a-Math.PI/2);
+    const p1=[px+r*Math.cos(a+Math.PI/2),py+r*Math.sin(a+Math.PI/2)],p2=[px+r*Math.cos(a-Math.PI/2),py+r*Math.sin(a-Math.PI/2)];
+    svg+=`<polygon points="${bx},${by} ${p1} ${p2}" fill="${col}"/><circle cx="${px}" cy="${py}" r="${r}" fill="${col}"/>`;
+  });
+  g.innerHTML=svg+`<circle cx="${c}" cy="${c}" r="7" fill="var(--bg)"/>`;
+})();
+fetch('./manifest.json').then(r=>r.json()).then(m=>{document.getElementById('ver').textContent='Firmware '+m.version;}).catch(()=>{});
+</script>
+</body>
+</html>

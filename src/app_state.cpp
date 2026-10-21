@@ -62,6 +62,16 @@ void setError(const String& err) {
   gStatus.lastErrorAt = millis();
 }
 
+void setLoading(bool loading) {
+  Guard g;
+  gStatus.loading = loading;
+}
+
+void setNextReady(bool ready) {
+  Guard g;
+  gStatus.nextReady = ready;
+}
+
 void countSkipped() {
   Guard g;
   gStatus.skipped++;

@@ -3,7 +3,8 @@
 #include <ArduinoJson.h>
 #include <Preferences.h>
 
-#if __has_include("secrets.h")
+// Release builds (published for the web flasher) never pick up local secrets.
+#if __has_include("secrets.h") && !defined(IMMICH_FRAME_RELEASE)
 #include "secrets.h"
 #endif
 
