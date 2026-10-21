@@ -221,6 +221,12 @@ void showMessageOnce(const String& title, const String& l1 = "", const String& l
   ui::message(title, l1, l2, "", color);
 }
 
+// Neutral placeholder while nothing has been shown yet; details are in the portal.
+void showWaiting() {
+  if (!gHistory.empty()) return;
+  showMessageOnce("Waiting for photos", "Status and details at", "http://" + WiFi.localIP().toString());
+}
+
 void resetSlideshow() {
   gQueueLen = gQueuePos = 0;
   gPage = 1;
@@ -230,12 +236,14 @@ void resetSlideshow() {
   gNextAt = 0;
 }
 
-bool drawAsset(const Asset& a, String& err, bool& aborted) {
+bool drawAsset(const Asset& a, String& err, bool& aborted, bool& touched) {
   aborted = false;
+  touched = false;
   digitalWrite(kPinLed, HIGH);
   bool ok = immich::fetchPreview(gCfg, a.id, [&](Stream& in, int len, String& e) {
-    gScreenMessage = "";
-    return jpeg::draw(tft, in, len, gCfg.fill, abortDecode, e, aborted);
+    bool drawn = jpeg::draw(tft, in, len, gCfg.fill, abortDecode, e, aborted, touched);
+    if (touched) gScreenMessage = "";
+    return drawn;
   }, err);
   digitalWrite(kPinLed, LOW);
   if (ok) {
@@ -267,16 +275,15 @@ void advance(int step) {
       gQueuePos = 0;
       if (!immich::fetchBatch(gCfg, gPage, gQueue, kBatchSize, gQueueLen, err)) {
         gQueueLen = 0;
-        state::setError(err);
+        state::setError("Loading photo list: " + err);
         log_w("fetchBatch: %s", err.c_str());
-        if (gHistory.empty()) showMessageOnce("Can't load photos", err.substring(0, 34), err.substring(34, 68), TFT_RED);
+        showWaiting();
         gNextAt = millis() + kRetryAfterErrorMs;
         return;
       }
       if (gQueueLen == 0) {
         state::setError("No photos found for this selection");
-        showMessageOnce("No photos", gCfg.sourceName.length() ? gCfg.sourceName : "Nothing matches this source",
-                        "Change it at http://" + WiFi.localIP().toString());
+        showWaiting();
         gNextAt = millis() + kRetryAfterErrorMs * 2;
         return;
       }
@@ -286,8 +293,8 @@ void advance(int step) {
   }
 
   String err;
-  bool aborted;
-  if (drawAsset(asset, err, aborted)) {
+  bool aborted, touched;
+  if (drawAsset(asset, err, aborted, touched)) {
     gFailures = 0;
     if (fresh) {
       gHistory.push_back(asset);
@@ -299,15 +306,23 @@ void advance(int step) {
   }
   if (aborted) return;  // a pending command takes over
 
+  // Errors go to the portal only; the screen keeps the last good photo.
   log_w("asset %s: %s", asset.id, err.c_str());
-  state::setError(err);
+  state::setError(String("Skipped ") + asset.id + ": " + err);
+  state::countSkipped();
   gFailures++;
-  if (gFailures >= 5) {
-    showMessageOnce("Can't show photos", err.substring(0, 34), err.substring(34, 68), TFT_RED);
-    gNextAt = millis() + kRetryAfterErrorMs;
-  } else {
-    gNextAt = millis() + 1000;  // skip to the next one quickly
+  if (touched && !gHistory.empty()) {
+    // The failed image got partly drawn; put the current photo back.
+    bool redrawAborted, redrawTouched;
+    String redrawErr;
+    if (!drawAsset(gHistory[gHistory.size() - 1 - gBack], redrawErr, redrawAborted, redrawTouched) &&
+        !redrawAborted)
+      log_w("redraw: %s", redrawErr.c_str());
+  } else if (gHistory.empty()) {
+    showWaiting();
   }
+  // Skip ahead quickly, but back off if nothing is working.
+  gNextAt = millis() + (gFailures >= 5 ? kRetryAfterErrorMs : 1000);
 }
 
 void calibrateTouch() {

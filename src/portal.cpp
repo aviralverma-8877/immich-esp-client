@@ -278,7 +278,9 @@ void handleStatus() {
   d["assetId"] = s.assetId;
   d["assetDate"] = s.assetDate;
   d["lastError"] = s.lastError;
+  if (s.lastError.length()) d["lastErrorAgo"] = (millis() - s.lastErrorAt) / 1000;
   d["shown"] = s.shown;
+  d["skipped"] = s.skipped;
   d["serverUrl"] = c.serverUrl;
   d["uptime"] = millis() / 1000;
   d["freeHeap"] = ESP.getFreeHeap();

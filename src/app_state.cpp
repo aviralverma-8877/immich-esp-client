@@ -53,13 +53,18 @@ void setShowing(const char* id, const char* date) {
   Guard g;
   gStatus.assetId = id;
   gStatus.assetDate = date;
-  gStatus.lastError = "";
   gStatus.shown++;
 }
 
 void setError(const String& err) {
   Guard g;
   gStatus.lastError = err;
+  gStatus.lastErrorAt = millis();
+}
+
+void countSkipped() {
+  Guard g;
+  gStatus.skipped++;
 }
 
 }  // namespace state

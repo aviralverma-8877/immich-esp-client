@@ -24,7 +24,9 @@ struct Ctx {
   uint16_t buf[kBufPixels];
 };
 
-uint8_t gWork[TJPGD_WORKSPACE_SIZE] __attribute__((aligned(4)));
+// tjpgd's stock workspace assumes two Huffman tables per class; Immich
+// previews often carry three (one per component), so leave room for them.
+uint8_t gWork[TJPGD_WORKSPACE_SIZE + 2048] __attribute__((aligned(4)));
 Ctx gCtx;  // ~2 KB; kept off the task stack. Only the slideshow task draws.
 
 size_t input(JDEC* jd, uint8_t* dst, size_t n) {
@@ -97,14 +99,15 @@ const char* describe(JRESULT r) {
     case JDR_PAR: return "bad parameter";
     case JDR_FMT1: return "corrupt JPEG data";
     case JDR_FMT2: return "unsupported JPEG format";
-    case JDR_FMT3: return "progressive JPEG not supported";
+    case JDR_FMT3: return "unsupported JPEG type (progressive, 12-bit or CMYK)";
     default: return "decode error";
   }
 }
 
 }  // namespace
 
-bool draw(TFT_eSPI& tft, Stream& in, int len, bool fill, AbortFn abort, String& err, bool& aborted) {
+bool draw(TFT_eSPI& tft, Stream& in, int len, bool fill, AbortFn abort, String& err, bool& aborted,
+          bool& touched) {
   Ctx& c = gCtx;
   c.in = &in;
   c.remaining = len;
@@ -113,6 +116,7 @@ bool draw(TFT_eSPI& tft, Stream& in, int len, bool fill, AbortFn abort, String& 
   c.abort = abort;
   c.aborted = false;
   aborted = false;
+  touched = false;
 
   // Bodmer's tjpgd keeps jd.swap across jd_prepare(), so it must be set
   // first. Swapping in the decoder lets pushImage() send bytes untouched.
@@ -120,9 +124,17 @@ bool draw(TFT_eSPI& tft, Stream& in, int len, bool fill, AbortFn abort, String& 
   jd.swap = 1;
   JRESULT res = jd_prepare(&jd, input, gWork, sizeof(gWork), &c);
   if (res != JDR_OK) {
-    err = String("JPEG header: ") + (c.ioError ? "download timed out" : describe(res));
+    if (c.ioError) {
+      err = "JPEG header: download timed out";
+    } else if (res == JDR_INP || res == JDR_FMT1) {
+      // Seen in the wild: Immich serving a corrupt preview file as image/jpeg.
+      err = "not a valid JPEG - regenerate this asset's thumbnails in Immich";
+    } else {
+      err = String("JPEG header: ") + describe(res);
+    }
     return false;
   }
+  touched = true;  // bars and blocks are drawn from here on
 
   c.scrW = tft.width();
   c.scrH = tft.height();

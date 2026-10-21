@@ -393,14 +393,16 @@ async function ota(){
   note('devMsg',r.ok?'Update installed, restarting...':'Update failed: '+(r.error||'unknown'),r.ok);
 }
 
+function ago(s){return s<60?s+' s ago':s<3600?Math.round(s/60)+' min ago':Math.round(s/3600)+' h ago';}
+
 async function status(){
   const s=await api('/api/status');if(s.ok===false)return;
   const rows=[];
   if(s.apMode)rows.push(['Mode','Setup access point - connect it to your WiFi below']);
   if(s.assetId)rows.push(['Photo',(s.assetDate?esc(s.assetDate)+' &middot; ':'')+'<a target="_blank" rel="noopener" href="'+esc(s.serverUrl)+'/photos/'+esc(s.assetId)+'">open in Immich</a>']);
   rows.push(['State',s.paused?'Paused':'Playing']);
-  if(s.lastError)rows.push(['Last error','<span class="err">'+esc(s.lastError)+'</span>']);
-  rows.push(['Shown',s.shown+' photos since start']);
+  if(s.lastError)rows.push(['Last error','<span class="err">'+esc(s.lastError)+'</span> <span class="hint">('+ago(s.lastErrorAgo)+')</span>']);
+  rows.push(['Shown',s.shown+' photos since start'+(s.skipped?' &middot; '+s.skipped+' skipped':'')]);
   rows.push(['Network',(s.ssid?esc(s.ssid)+' ('+s.rssi+' dBm) &middot; ':'')+esc(s.ip)]);
   rows.push(['Device','fw '+esc(s.version)+' &middot; heap '+Math.round(s.freeHeap/1024)+' KB (min '+Math.round(s.minFreeHeap/1024)+')']);
   $('status').innerHTML=rows.map(r=>'<span>'+r[0]+'</span><span>'+r[1]+'</span>').join('');

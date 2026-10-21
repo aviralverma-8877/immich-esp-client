@@ -14,7 +14,9 @@ struct Status {
   String assetId;
   String assetDate;
   String lastError;
+  uint32_t lastErrorAt = 0;  // millis() when lastError was set
   uint32_t shown = 0;
+  uint32_t skipped = 0;
 };
 
 void begin();
@@ -31,5 +33,6 @@ void setAp(bool ap, const String& ip);
 void setPaused(bool paused);
 void setShowing(const char* id, const char* date);
 void setError(const String& err);
+void countSkipped();
 
 }  // namespace state
