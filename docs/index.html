@@ -74,7 +74,7 @@ footer{color:var(--muted);font-size:13px;text-align:center;margin-top:24px}
     <li>The frame starts a setup WiFi network called <code>ImmichFrame-XXXX</code> and shows a QR code. Scan it with your phone to join.</li>
     <li>The setup page opens by itself (or go to <code>http://192.168.4.1</code>). Pick your home WiFi, enter your Immich server URL, for example <code>http://192.168.1.10:2283</code>, and an API key.</li>
     <li>Press <b>Connect</b>. The frame checks the WiFi and your Immich login, shows its new address and restarts.</li>
-    <li>Open that address (or <code>http://immich-frame.local</code>) to choose what to show: all photos, an album, a person, a tag or favourites, plus order, interval, transitions and orientation.</li>
+    <li>Open that address (or <code>http://immich-frame.local</code>) to choose what to show: all photos, an album, a person, a tag or favourites, plus order, interval, transitions and orientation. The page also shows a preview of the photo on the frame.</li>
   </ol>
 </section>
 
@@ -97,6 +97,7 @@ footer{color:var(--muted);font-size:13px;text-align:center;margin-top:24px}
     <tr><td>Factory reset</td><td>Hold BOOT for 6 s, or hold BTN1 + BTN2 for 3 s while powering on.</td></tr>
     <tr><td>Wrong colours</td><td>In the portal use <i>Display colours &rarr; Show test pattern</i> and switch colour order or inversion until the bars match their labels.</td></tr>
     <tr><td>Can't connect</td><td>Close other serial monitors (Arduino, PlatformIO) using the port. If flashing still fails to start, hold BOOT while pressing Connect.</td></tr>
+    <tr><td>"Open on another device"</td><td>The portal can be used from one device at a time. Close it on the other device (or leave that tab in the background) and it frees up within 30 seconds.</td></tr>
     <tr><td>Updates</td><td>Run this installer again, or upload a new firmware file from the portal's Device section.</td></tr>
   </table>
 </section>

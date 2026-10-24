@@ -37,6 +37,9 @@ version in `docs/manifest.json`; commit both and GitHub Pages serves them.
    Immich login, reports the frame's new address, then restarts.
 3. On your network the portal is at the frame's IP or
    `http://immich-frame.local` (full settings are also at `/settings`).
+   *Now showing* has a preview of the photo on the frame, linked to Immich.
+   The portal serves one device at a time: another device gets a "busy"
+   page until the first has been idle (or its tab hidden) for 30 s.
 4. Choose what to show: all photos, an album, a person, a tag or favourites,
    plus order, interval, fit/fill and orientation (portrait by default).
 
@@ -71,6 +74,8 @@ and *Inversion* until each bar matches its label; changes apply instantly.
   stream with TJpgDec, using the coarsest 1/1–1/8 scale that still covers the
   screen and then resampling to an exact fit or fill, so no image buffer is
   needed (the WROOM-32 has no PSRAM).
+- The portal's preview is Immich's small *thumbnail* rendition, relayed by
+  the frame (`/api/thumb`) because the browser has no API key.
 - The portal (`portal.cpp`, page in `portal_html.h`) runs in its own task on
   core 0; the slideshow runs in `loop()` on core 1. Requests to Immich are
   serialised so only one TLS session is open at a time.

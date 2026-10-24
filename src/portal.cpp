@@ -58,14 +58,49 @@ void logRequest() {
 #endif
 }
 
+// One device at a time: the first client owns the portal until it has been
+// quiet this long. The open page polls /api/status every 5 s while visible.
+constexpr uint32_t kSessionIdleMs = 30000;
+IPAddress gOwner;
+uint32_t gOwnerSeenAt = 0;
+
+const char kBusyHtml[] PROGMEM = R"HTML(<!doctype html><html lang="en"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1"><meta http-equiv="refresh" content="10">
+<title>Immich Frame</title><style>body{margin:0;padding:40px 16px;text-align:center;font:15px/1.5 system-ui,sans-serif;
+background:#f4f5f7;color:#1d2330}@media (prefers-color-scheme:dark){body{background:#11141a;color:#e6e9ef}}</style></head>
+<body><h1 style="font-size:20px">Frame settings are open on another device</h1>
+<p>Close them there, or wait - this page retries every 10 seconds.</p></body></html>)HTML";
+
+void sendError(int code, const String& msg);
+
+bool claimSession() {
+  const IPAddress ip = server.client().remoteIP();
+  const uint32_t now = millis();
+  if (ip == gOwner || gOwner == IPAddress() || now - gOwnerSeenAt > kSessionIdleMs) {
+    if (ip != gOwner) Serial.printf("[portal] session now %s\n", ip.toString().c_str());
+    gOwner = ip;
+    gOwnerSeenAt = now;
+    return true;
+  }
+  server.sendHeader("Cache-Control", "no-store");
+  if (server.uri().startsWith("/api/") || server.uri() == "/update") {
+    sendError(423, "The portal is open on another device (" + gOwner.toString() + ")");
+  } else {
+    server.send_P(423, "text/html", kBusyHtml);
+  }
+  return false;
+}
+
 bool authorized() {
   // The setup AP has its own random WPA2 password shown only on the screen,
   // and phone captive-portal sheets can't show a basic-auth prompt.
-  if (gApMode) return true;
   AppConfig cfg = config::get();
-  if (cfg.adminPass.isEmpty() || server.authenticate("admin", cfg.adminPass.c_str())) return true;
-  server.requestAuthentication(BASIC_AUTH, "Immich Frame");
-  return false;
+  if (!gApMode && !cfg.adminPass.isEmpty() && !server.authenticate("admin", cfg.adminPass.c_str())) {
+    server.requestAuthentication(BASIC_AUTH, "Immich Frame");
+    return false;
+  }
+  // Only after authenticating, so a stranger can't lock the owner out.
+  return claimSession();
 }
 
 void sendJson(int code, const JsonDocument& doc) {
@@ -379,6 +414,34 @@ void handleSources() {
   server.send(200, "application/json", json);
 }
 
+// Relays Immich's small thumbnail of the photo on screen, since the browser
+// has no API key. `id` in the query only busts the browser cache.
+void handleThumb() {
+  if (!authorized()) return;
+  const String id = state::get().assetId;
+  if (id.isEmpty()) return sendError(404, "Nothing shown yet");
+  if (WiFi.status() != WL_CONNECTED) return sendError(503, "Not connected to WiFi");
+
+  bool started = false;
+  String err;
+  immich::fetchThumbnail(config::get(), id.c_str(), [&](Stream& in, int len, const String& type, String& e) {
+    server.sendHeader("Cache-Control", "private, max-age=86400");
+    server.setContentLength(len >= 0 ? len : CONTENT_LENGTH_UNKNOWN);
+    server.send(200, type, "");
+    started = true;
+    char buf[1024];
+    for (int left = len; left != 0;) {
+      const size_t want = left > 0 ? min((size_t)left, sizeof(buf)) : sizeof(buf);
+      const size_t got = in.readBytes(buf, want);
+      if (got == 0) break;  // end of an unsized body, or a timeout
+      server.sendContent(buf, got);
+      if (left > 0) left -= got;
+    }
+    return true;
+  }, err);
+  if (!started) sendError(502, err);
+}
+
 void handleCmd() {
   if (!authorized()) return;
   const String c = server.arg("c");
@@ -417,6 +480,7 @@ void handleUpdateUpload() {
   if (up.status == UPLOAD_FILE_START) {
     AppConfig cfg = config::get();
     if (!cfg.adminPass.isEmpty() && !server.authenticate("admin", cfg.adminPass.c_str())) return;
+    if (server.client().remoteIP() != gOwner) return;  // handleUpdateDone answers 423
     log_i("OTA start: %s", up.filename.c_str());
     if (!Update.begin(UPDATE_SIZE_UNKNOWN)) Update.printError(Serial);
   } else if (up.status == UPLOAD_FILE_WRITE) {
@@ -488,6 +552,7 @@ void begin(bool apMode) {
   server.on("/api/test", HTTP_POST, handleTest);
   server.on("/api/sources", HTTP_GET, handleSources);
   server.on("/api/cmd", HTTP_POST, handleCmd);
+  server.on("/api/thumb", HTTP_GET, handleThumb);
   server.on("/update", HTTP_POST, handleUpdateDone, handleUpdateUpload);
   server.onNotFound(handleNotFound);
   server.begin();

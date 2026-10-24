@@ -311,15 +311,19 @@ bool listSources(const AppConfig& cfg, Source type, String& json, String& err) {
   return true;
 }
 
-bool fetchPreview(const AppConfig& cfg, const char* assetId, const ImageSink& sink, String& err) {
+namespace {
+
+// GETs /assets/{id}/thumbnail at `size` and hands the open response to `sink`.
+bool fetchRendition(const AppConfig& cfg, const char* assetId, const char* size, const char* accept,
+                    const ThumbSink& sink, String& err) {
   NetLock lock;
   if (!lock.ok()) {
     err = "Network busy";
     return false;
   }
   Request req;
-  if (!open(req, cfg, String("/assets/") + assetId + "/thumbnail?size=preview", err)) return false;
-  req.http.addHeader("Accept", "image/jpeg");
+  if (!open(req, cfg, String("/assets/") + assetId + "/thumbnail?size=" + size, err)) return false;
+  req.http.addHeader("Accept", accept);
   const char* headers[] = {"Content-Type"};
   req.http.collectHeaders(headers, 1);
 
@@ -328,12 +332,31 @@ bool fetchPreview(const AppConfig& cfg, const char* assetId, const ImageSink& si
     err = describeError(req, code);
     return false;
   }
-  String type = req.http.header("Content-Type");
-  if (!type.startsWith("image/jpeg")) {
-    err = "Preview is " + type + "; set Immich > Administration > Settings > Image > Preview format to JPEG";
-    return false;
-  }
-  return sink(*req.http.getStreamPtr(), req.http.getSize(), err);
+  return sink(*req.http.getStreamPtr(), req.http.getSize(), req.http.header("Content-Type"), err);
+}
+
+}  // namespace
+
+bool fetchPreview(const AppConfig& cfg, const char* assetId, const ImageSink& sink, String& err) {
+  return fetchRendition(cfg, assetId, "preview", "image/jpeg", [&](Stream& in, int len, const String& type,
+                                                                   String& e) {
+    if (!type.startsWith("image/jpeg")) {
+      e = "Preview is " + type + "; set Immich > Administration > Settings > Image > Preview format to JPEG";
+      return false;
+    }
+    return sink(in, len, e);
+  }, err);
+}
+
+bool fetchThumbnail(const AppConfig& cfg, const char* assetId, const ThumbSink& sink, String& err) {
+  return fetchRendition(cfg, assetId, "thumbnail", "image/*", [&](Stream& in, int len, const String& type,
+                                                                  String& e) {
+    if (!type.startsWith("image/")) {
+      e = "Thumbnail is " + type;
+      return false;
+    }
+    return sink(in, len, type, e);
+  }, err);
 }
 
 }  // namespace immich

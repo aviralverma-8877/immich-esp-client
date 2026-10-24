@@ -33,4 +33,11 @@ using ImageSink = std::function<bool(Stream& in, int len, String& err)>;
 // Downloads the asset's preview rendition and hands the body to `sink`.
 bool fetchPreview(const AppConfig& cfg, const char* assetId, const ImageSink& sink, String& err);
 
+// Receives the small thumbnail rendition (WebP or JPEG, as Immich is set up);
+// `type` is its Content-Type.
+using ThumbSink = std::function<bool(Stream& in, int len, const String& type, String& err)>;
+
+// Downloads the asset's thumbnail rendition (~250 px) for the web portal.
+bool fetchThumbnail(const AppConfig& cfg, const char* assetId, const ThumbSink& sink, String& err);
+
 }  // namespace immich

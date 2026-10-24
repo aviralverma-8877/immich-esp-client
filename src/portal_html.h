@@ -188,6 +188,7 @@ button.danger{color:var(--err)}
 .controls{display:flex;gap:8px;margin-top:12px}.controls button{flex:1;font-size:18px}
 a{color:var(--accent)}
 .hint{font-size:12px;color:var(--muted);margin-top:4px}
+.thumb{display:block;max-width:100%;max-height:240px;margin:0 auto 12px;border-radius:8px}
 </style>
 </head>
 <body>
@@ -196,6 +197,7 @@ a{color:var(--accent)}
 
 <section>
 <h2>Now showing</h2>
+<a id="thumbLink" target="_blank" rel="noopener" hidden><img id="thumb" class="thumb" alt="Photo on the frame"></a>
 <div class="kv" id="status"><span>Status</span><span>Loading...</span></div>
 <div class="controls">
 <button onclick="cmd('prev')" title="Previous">&#9664;</button>
@@ -427,10 +429,21 @@ async function ota(){
   note('devMsg',r.ok?'Update installed, restarting...':'Update failed: '+(r.error||'unknown'),r.ok);
 }
 
+let thumbId='';
+// Fetched through the frame, only when the photo changes.
+function thumb(s){
+  if(!s.assetId||s.assetId===thumbId)return;
+  thumbId=s.assetId;
+  $('thumbLink').href=s.serverUrl+'/photos/'+s.assetId;
+  $('thumb').onload=()=>{$('thumbLink').hidden=false;};
+  $('thumb').onerror=()=>{$('thumbLink').hidden=true;thumbId='';};
+  $('thumb').src='/api/thumb?id='+encodeURIComponent(s.assetId);
+}
+
 function ago(s){return s<60?s+' s ago':s<3600?Math.round(s/60)+' min ago':Math.round(s/3600)+' h ago';}
 
 async function status(){
-  const s=await api('/api/status');if(s.ok===false)return;
+  const s=await api('/api/status');if(s.ok===false){if(s.error)note('nowMsg',s.error,false);return;}
   const rows=[];
   if(s.apMode)rows.push(['Mode','Setup access point - connect it to your WiFi below']);
   if(s.assetId)rows.push(['Photo',(s.assetDate?esc(s.assetDate)+' &middot; ':'')+'<a target="_blank" rel="noopener" href="'+esc(s.serverUrl)+'/photos/'+esc(s.assetId)+'">open in Immich</a>']);
@@ -440,10 +453,13 @@ async function status(){
   rows.push(['Network',(s.ssid?esc(s.ssid)+' ('+s.rssi+' dBm) &middot; ':'')+esc(s.ip)]);
   rows.push(['Device','fw '+esc(s.version)+' &middot; heap '+Math.round(s.freeHeap/1024)+' KB (min '+Math.round(s.minFreeHeap/1024)+')']);
   $('status').innerHTML=rows.map(r=>'<span>'+r[0]+'</span><span>'+r[1]+'</span>').join('');
+  thumb(s);
   $('pauseBtn').innerHTML=s.paused?'&#9654;&#10073;':'&#10073;&#10073;';
 }
 
-load();status();setInterval(status,5000);
+// Polling holds this device's claim on the portal; a hidden tab lets it go.
+load();status();setInterval(()=>{if(!document.hidden)status();},5000);
+document.addEventListener('visibilitychange',()=>{if(!document.hidden)status();});
 </script>
 </body>
 </html>
