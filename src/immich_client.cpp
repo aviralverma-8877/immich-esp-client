@@ -26,6 +26,36 @@ class NetLock {
   bool locked_;
 };
 
+// Reads a response body, sleeping while it waits for data. Stream::timedRead()
+// busy-waits instead, and ArduinoJson reads byte by byte: on a slow response
+// the portal task then hogs core 0 until the task watchdog resets the chip.
+class PatientStream : public Stream {
+ public:
+  PatientStream(WiFiClient& in, uint32_t timeoutMs) : in_(in), timeoutMs_(timeoutMs) {}
+  int available() override { return in_.available(); }
+  int read() override { return waitForData() ? in_.read() : -1; }
+  int peek() override { return waitForData() ? in_.peek() : -1; }
+  size_t readBytes(char* buf, size_t n) override {
+    size_t done = 0;
+    while (done < n && waitForData()) done += in_.readBytes(buf + done, min(n - done, (size_t)in_.available()));
+    return done;
+  }
+  size_t write(uint8_t) override { return 0; }
+  void flush() override {}
+
+ private:
+  bool waitForData() {
+    for (const uint32_t start = millis(); in_.available() <= 0;) {
+      if (!in_.connected() || millis() - start > timeoutMs_) return false;
+      delay(1);
+    }
+    return true;
+  }
+
+  WiFiClient& in_;
+  uint32_t timeoutMs_;
+};
+
 // Holds the transport and the HTTP client. The client is declared after the
 // transport so it is destroyed first.
 struct Request {
@@ -68,7 +98,8 @@ String describeError(Request& req, int code) {
   JsonDocument filter;
   filter["message"] = true;
   JsonDocument doc;
-  if (deserializeJson(doc, req.http.getStream(), DeserializationOption::Filter(filter)) == DeserializationError::Ok) {
+  PatientStream in(req.http.getStream(), 5000);
+  if (deserializeJson(doc, in, DeserializationOption::Filter(filter)) == DeserializationError::Ok) {
     // Validation errors come back as an array of messages.
     if (doc["message"].is<JsonArray>()) {
       msg += ": " + doc["message"][0].as<String>();
@@ -90,7 +121,8 @@ bool getJson(const AppConfig& cfg, const String& path, const JsonDocument& filte
     err = describeError(req, code);
     return false;
   }
-  DeserializationError de = deserializeJson(doc, req.http.getStream(), DeserializationOption::Filter(filter));
+  PatientStream in(req.http.getStream(), 15000);
+  DeserializationError de = deserializeJson(doc, in, DeserializationOption::Filter(filter));
   if (de) {
     err = String("Bad JSON from server: ") + de.c_str();
     return false;
@@ -111,7 +143,8 @@ bool postJson(const AppConfig& cfg, const String& path, const JsonDocument& body
     err = describeError(req, code);
     return false;
   }
-  DeserializationError de = deserializeJson(doc, req.http.getStream(), DeserializationOption::Filter(filter));
+  PatientStream in(req.http.getStream(), 15000);
+  DeserializationError de = deserializeJson(doc, in, DeserializationOption::Filter(filter));
   if (de) {
     err = String("Bad JSON from server: ") + de.c_str();
     return false;

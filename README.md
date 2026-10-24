@@ -79,6 +79,10 @@ and *Inversion* until each bar matches its label; changes apply instantly.
 - The portal (`portal.cpp`, page in `portal_html.h`) runs in its own task on
   core 0; the slideshow runs in `loop()` on core 1. Requests to Immich are
   serialised so only one TLS session is open at a time.
+- Responses are read with `PatientStream`, which sleeps while waiting for
+  data. Arduino's `Stream::timedRead()` busy-waits instead, and on a slow
+  connection that kept the portal task hogging core 0 until the task watchdog
+  reset the chip (seen with the portal open in several tabs).
 
 Requirements: Immich preview format must be JPEG (Administration > Settings >
 Image), which is the default. Tested against the API of Immich 3.2.

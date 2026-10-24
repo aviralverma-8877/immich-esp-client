@@ -429,13 +429,24 @@ void handleThumb() {
     server.setContentLength(len >= 0 ? len : CONTENT_LENGTH_UNKNOWN);
     server.send(200, type, "");
     started = true;
+    // Only read what has arrived: Stream::readBytes() spins while it waits,
+    // which on core 0 starves the idle task and trips the task watchdog.
     char buf[1024];
+    uint32_t lastData = millis();
     for (int left = len; left != 0;) {
-      const size_t want = left > 0 ? min((size_t)left, sizeof(buf)) : sizeof(buf);
+      const int avail = in.available();
+      if (avail <= 0) {
+        if (millis() - lastData > (len < 0 ? 2000u : 10000u)) break;  // end of an unsized body, or stalled
+        delay(2);
+        continue;
+      }
+      size_t want = min((size_t)avail, sizeof(buf));
+      if (left > 0) want = min(want, (size_t)left);
       const size_t got = in.readBytes(buf, want);
-      if (got == 0) break;  // end of an unsized body, or a timeout
+      if (got == 0) break;
       server.sendContent(buf, got);
       if (left > 0) left -= got;
+      lastData = millis();
     }
     return true;
   }, err);
