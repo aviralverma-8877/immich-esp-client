@@ -325,6 +325,7 @@ void handleStatus() {
   d["ip"] = s.ip;
   d["ssid"] = WiFi.SSID();
   d["rssi"] = WiFi.RSSI();
+  d["bssid"] = WiFi.BSSIDstr();
   d["paused"] = s.paused;
   d["assetId"] = s.assetId;
   d["assetDate"] = s.assetDate;
@@ -414,11 +415,12 @@ void handleSources() {
   server.send(200, "application/json", json);
 }
 
-// Relays Immich's small thumbnail of the photo on screen, since the browser
-// has no API key. `id` in the query only busts the browser cache.
+// Relays Immich's small thumbnail of a photo (by default the one on screen),
+// since the browser has no API key. Serving the `id` asked for, not whatever is
+// current when the request gets its turn, keeps the browser's cache correct.
 void handleThumb() {
   if (!authorized()) return;
-  const String id = state::get().assetId;
+  const String id = isUuid(server.arg("id")) ? server.arg("id") : state::get().assetId;
   if (id.isEmpty()) return sendError(404, "Nothing shown yet");
   if (WiFi.status() != WL_CONNECTED) return sendError(503, "Not connected to WiFi");
 

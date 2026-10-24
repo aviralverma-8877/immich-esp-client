@@ -32,6 +32,9 @@ constexpr int kPinSdCs = 33;     // SD card on the display module; keep it off t
 constexpr uint32_t kWifiConnectTimeoutMs = 20000;
 constexpr uint32_t kApRetryStaMs = 60000;
 constexpr uint32_t kRetryAfterErrorMs = 30000;
+constexpr uint32_t kRoamCheckMs = 5 * 60 * 1000;
+constexpr int kRoamWeakRssi = -70;  // dBm; only look for a better AP below this
+constexpr int kRoamMinGain = 8;     // dB stronger before it is worth reconnecting
 constexpr size_t kBatchSize = 20;
 constexpr size_t kHistorySize = 20;
 constexpr int kMaxQuickSkips = 8;  // consecutive unusable previews tried back to back
@@ -116,9 +119,12 @@ void pollInputs() {
 }
 
 // While prefetching, only commands that need the screen or change what's
-// shown interrupt; "next" simply waits for the photo being prepared.
+// shown interrupt; "next" simply waits for the photo being prepared. The
+// portal waiting for the connection also interrupts, so its preview of the
+// photo on screen isn't held up; retryPrefetch() picks the download up again.
 bool abortPrefetch() {
   pollInputs();
+  if (immich::othersWaiting()) return true;
   state::Cmd c = state::peek();
   return c != state::Cmd::None && c != state::Cmd::Next && c != state::Cmd::TogglePause;
 }
@@ -191,6 +197,27 @@ bool connectStation(const AppConfig& cfg) {
   Serial.printf("[wifi] %s %s\n", cfg.wifiSsid.c_str(),
                 ok ? ("connected, " + WiFi.localIP().toString()).c_str() : "connect failed");
   return ok;
+}
+
+// Repeaters and mesh nodes share one SSID, and once joined the ESP32 never
+// leaves its AP. While the signal is weak, look for a clearly stronger one;
+// reconnecting then picks it, since joining scans every channel by signal.
+uint32_t gLastRoamCheck = 0;
+void maybeRoam(const AppConfig& cfg) {
+  if (millis() - gLastRoamCheck < kRoamCheckMs) return;
+  gLastRoamCheck = millis();
+  const int rssi = WiFi.RSSI();
+  if (rssi > kRoamWeakRssi) return;
+  const int n = WiFi.scanNetworks();
+  int best = -1;
+  for (int i = 0; i < n; i++)
+    if (WiFi.SSID(i) == cfg.wifiSsid && (best < 0 || WiFi.RSSI(i) > WiFi.RSSI(best))) best = i;
+  if (best >= 0 && WiFi.RSSI(best) >= rssi + kRoamMinGain && WiFi.BSSIDstr(best) != WiFi.BSSIDstr()) {
+    Serial.printf("[wifi] roaming from %s (%d dBm) to %s (%d dBm)\n", WiFi.BSSIDstr().c_str(), rssi,
+                  WiFi.BSSIDstr(best).c_str(), WiFi.RSSI(best));
+    WiFi.begin(cfg.wifiSsid.c_str(), cfg.wifiPass.c_str());
+  }
+  WiFi.scanDelete();
 }
 
 // In setup mode, periodically retry the saved network while nobody is using
@@ -396,6 +423,14 @@ void prefetchNext() {
     }
     recordSkip(a, err);
   }
+}
+
+// Resumes a prefetch that stepped aside, once the connection is free.
+uint32_t gPrefetchRetryAt = 0;
+void retryPrefetch() {
+  if (gHaveReady || !gHavePending || immich::othersWaiting() || millis() - gPrefetchRetryAt < 2000) return;
+  gPrefetchRetryAt = millis();
+  prefetchNext();
 }
 
 // step: +1 next, -1 previous, 0 redraw the current photo.
@@ -620,6 +655,9 @@ void setup() {
   }
 
   WiFi.persistent(false);
+  // Default fast scan joins the first AP heard with the SSID, not the strongest.
+  WiFi.setScanMethod(WIFI_ALL_CHANNEL_SCAN);
+  WiFi.setSortMethod(WIFI_CONNECT_AP_BY_SIGNAL);
   Preferences boot;
   boot.begin("boot", false);
   const bool forceSetup = boot.getBool("setup", false);
@@ -657,6 +695,9 @@ void loop() {
     if (gHistory.empty()) showMessageOnce("WiFi disconnected", "Reconnecting to " + gCfg.wifiSsid);
   } else if (!gPaused && (int32_t)(millis() - gNextAt) >= 0) {
     advance(1);
+  } else {
+    retryPrefetch();
+    maybeRoam(gCfg);
   }
   delay(10);
 }

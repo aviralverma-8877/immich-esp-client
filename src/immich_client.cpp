@@ -4,6 +4,7 @@
 #include <HTTPClient.h>
 #include <WiFiClientSecure.h>
 
+#include <atomic>
 #include <memory>
 #include <set>
 
@@ -13,10 +14,15 @@ namespace {
 // Only one Immich request at a time: two TLS sessions would not fit in the
 // heap of a WROOM-32 without PSRAM, and the portal and slideshow share it.
 SemaphoreHandle_t gNetMutex;
+std::atomic<int> gWaiting{0};  // tasks queued for gNetMutex
 
 class NetLock {
  public:
-  NetLock() { locked_ = xSemaphoreTake(gNetMutex, pdMS_TO_TICKS(30000)) == pdTRUE; }
+  NetLock() {
+    gWaiting++;
+    locked_ = xSemaphoreTake(gNetMutex, pdMS_TO_TICKS(30000)) == pdTRUE;
+    gWaiting--;
+  }
   ~NetLock() {
     if (locked_) xSemaphoreGive(gNetMutex);
   }
@@ -231,6 +237,8 @@ void noteKey(const AppConfig& cfg, String& err) {
 
 void begin() { gNetMutex = xSemaphoreCreateMutex(); }
 
+bool othersWaiting() { return gWaiting.load() > 0; }
+
 bool testConnection(const AppConfig& cfg, String& info) {
   NetLock lock;
   if (!lock.ok()) {
@@ -365,7 +373,11 @@ bool fetchRendition(const AppConfig& cfg, const char* assetId, const char* size,
     err = describeError(req, code);
     return false;
   }
-  return sink(*req.http.getStreamPtr(), req.http.getSize(), req.http.header("Content-Type"), err);
+  const bool ok = sink(*req.http.getStreamPtr(), req.http.getSize(), req.http.header("Content-Type"), err);
+  // Close outright: HTTPClient's own cleanup flushes, which downloads the rest
+  // of an abandoned image while the connection is wanted elsewhere.
+  req.transport->stop();
+  return ok;
 }
 
 }  // namespace

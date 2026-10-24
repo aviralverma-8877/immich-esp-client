@@ -15,6 +15,10 @@ namespace immich {
 
 void begin();
 
+// True while a task is queued for the Immich connection, so a long background
+// download can step aside (e.g. for the portal's thumbnail).
+bool othersWaiting();
+
 // Checks the server is reachable and the API key is valid.
 // On success `info` holds e.g. "Immich 3.2.2 - signed in as Jane".
 bool testConnection(const AppConfig& cfg, String& info);

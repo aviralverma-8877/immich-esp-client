@@ -188,7 +188,8 @@ button.danger{color:var(--err)}
 .controls{display:flex;gap:8px;margin-top:12px}.controls button{flex:1;font-size:18px}
 a{color:var(--accent)}
 .hint{font-size:12px;color:var(--muted);margin-top:4px}
-.thumb{display:block;max-width:100%;max-height:240px;margin:0 auto 12px;border-radius:8px}
+.thumb{display:block;max-width:100%;max-height:240px;margin:0 auto 12px;border-radius:8px;transition:opacity .3s}
+.thumb.stale{opacity:.35}
 </style>
 </head>
 <body>
@@ -435,7 +436,9 @@ function thumb(s){
   if(!s.assetId||s.assetId===thumbId)return;
   thumbId=s.assetId;
   $('thumbLink').href=s.serverUrl+'/photos/'+s.assetId;
-  $('thumb').onload=()=>{$('thumbLink').hidden=false;};
+  // The old photo stays, dimmed, until the new one arrives (slow on weak WiFi).
+  $('thumb').classList.add('stale');
+  $('thumb').onload=()=>{$('thumbLink').hidden=false;$('thumb').classList.remove('stale');};
   $('thumb').onerror=()=>{$('thumbLink').hidden=true;thumbId='';};
   $('thumb').src='/api/thumb?id='+encodeURIComponent(s.assetId);
 }
@@ -450,7 +453,7 @@ async function status(){
   rows.push(['State',(s.paused?'Paused':'Playing')+(s.loading?' &middot; downloading a photo':s.nextReady?' &middot; next photo ready':'')]);
   if(s.lastError)rows.push(['Last error','<span class="err">'+esc(s.lastError)+'</span> <span class="hint">('+ago(s.lastErrorAgo)+')</span>']);
   rows.push(['Shown',s.shown+' photos since start'+(s.skipped?' &middot; '+s.skipped+' skipped':'')]);
-  rows.push(['Network',(s.ssid?esc(s.ssid)+' ('+s.rssi+' dBm) &middot; ':'')+esc(s.ip)]);
+  rows.push(['Network',(s.ssid?esc(s.ssid)+' ('+s.rssi+' dBm'+(s.bssid?', AP '+esc(s.bssid):'')+') &middot; ':'')+esc(s.ip)]);
   rows.push(['Device','fw '+esc(s.version)+' &middot; heap '+Math.round(s.freeHeap/1024)+' KB (min '+Math.round(s.minFreeHeap/1024)+')']);
   $('status').innerHTML=rows.map(r=>'<span>'+r[0]+'</span><span>'+r[1]+'</span>').join('');
   thumb(s);
