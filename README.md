@@ -49,13 +49,17 @@ version in `docs/manifest.json`; commit both and GitHub Pages serves them.
 
 | Input | Action |
 | --- | --- |
-| BTN1 (IO39) | next; hold 1.2 s to pause/resume |
-| BTN2 (IO36) | previous |
+| BTN1 (IO39) | previous |
+| BTN2 (IO36) | next; hold 1.2 s to pause/resume |
 | Touch (after calibration) | left third previous, middle pause, right third next |
 | Touch (uncalibrated) | any tap = next |
 | Portal > Device > *Re-run setup* | restart into the setup network once, keeping settings (e.g. to change WiFi) |
 | BOOT held 6 s | factory reset |
 | BTN1 + BTN2 held at power-up for 3 s | factory reset |
+
+The two buttons can be swapped under *Slideshow > Buttons* in the portal; the
+pause hold always follows the next button. When a photo you asked for still
+has to download, *Loading next photo...* shows at the top until it appears.
 
 Run *Calibrate touch* from the portal once, and again after changing orientation.
 

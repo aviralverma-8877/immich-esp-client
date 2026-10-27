@@ -38,6 +38,10 @@ void caption(const String& text);
 // Pause marker in the top-right corner.
 void pausedBadge(bool paused);
 
+// Small notice centred at the top, drawn over the current image while the
+// next one downloads; the next image repaints it.
+void loadingBadge(const String& text);
+
 // "2026-09-25" -> "25 Sep 2026"; returns "" for malformed input.
 String formatDate(const char* isoDate);
 

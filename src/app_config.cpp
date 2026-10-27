@@ -34,6 +34,7 @@ void toJson(const AppConfig& c, JsonDocument& d) {
   d["showDate"] = c.showDate;
   d["rotation"] = c.rotation;
   d["transition"] = c.transition;
+  d["swapButtons"] = c.swapButtons;
   d["colorBgr"] = c.colorBgr;
   d["colorInvert"] = c.colorInvert;
   d["adminPass"] = c.adminPass;
@@ -58,6 +59,7 @@ void fromJson(const JsonDocument& d, AppConfig& c) {
   c.showDate = d["showDate"] | c.showDate;
   c.rotation = d["rotation"] | c.rotation;
   c.transition = d["transition"] | c.transition;
+  c.swapButtons = d["swapButtons"] | c.swapButtons;
   c.colorBgr = d["colorBgr"] | c.colorBgr;
   c.colorInvert = d["colorInvert"] | c.colorInvert;
   c.adminPass = d["adminPass"] | c.adminPass;

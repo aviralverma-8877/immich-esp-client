@@ -28,6 +28,7 @@ struct AppConfig {
   bool showDate = false;
   uint8_t rotation = 0;  // TFT_eSPI rotation; 0/2 portrait, 1/3 landscape
   String transition = "random";  // fx::name() of an effect, "random" or "none"
+  bool swapButtons = false;      // false: BTN1 previous, BTN2 next; true: the reverse
 
   // Panel colour fixes: identical-looking ST7789 modules differ in these.
   bool colorBgr = true;      // panel expects blue-green-red (true for this board's ST7789)

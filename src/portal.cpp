@@ -259,6 +259,7 @@ void handleGetConfig() {
   d["showDate"] = c.showDate;
   d["rotation"] = c.rotation;
   d["transition"] = c.transition;
+  d["swapButtons"] = c.swapButtons;
   d["colorBgr"] = c.colorBgr;
   d["colorInvert"] = c.colorInvert;
   d["adminPassSet"] = !c.adminPass.isEmpty();
@@ -294,6 +295,7 @@ void handlePostConfig() {
   if (in["showDate"].is<bool>()) c.showDate = in["showDate"];
   if (in["rotation"].is<int>()) c.rotation = constrain(in["rotation"].as<int>(), 0, 3);
   if (in["transition"].is<const char*>()) c.transition = in["transition"].as<String>();
+  if (in["swapButtons"].is<bool>()) c.swapButtons = in["swapButtons"];
   if (in["colorBgr"].is<bool>()) c.colorBgr = in["colorBgr"];
   if (in["colorInvert"].is<bool>()) c.colorInvert = in["colorInvert"];
   if (c.rotation != oldRotation) c.touchCalValid = false;  // calibration is per orientation

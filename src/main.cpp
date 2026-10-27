@@ -24,8 +24,8 @@ namespace {
 
 // Board pins (see ESP32-EasyEDA schematic, sheets "MCU" and "Buttons and LEDs").
 constexpr int kPinLed = 2;       // LED2, active high
-constexpr int kPinBtnNext = 39;  // BTN1, active low, external 10k pull-up
-constexpr int kPinBtnPrev = 36;  // BTN2, active low, external 10k pull-up
+constexpr int kPinBtn1 = 39;     // BTN1, active low, external 10k pull-up
+constexpr int kPinBtn2 = 36;     // BTN2, active low, external 10k pull-up
 constexpr int kPinBoot = 0;      // BOOT1, active low
 constexpr int kPinSdCs = 33;     // SD card on the display module; keep it off the bus
 
@@ -39,27 +39,47 @@ constexpr size_t kBatchSize = 20;
 constexpr size_t kHistorySize = 20;
 constexpr int kMaxQuickSkips = 8;  // consecutive unusable previews tried back to back
 
+AppConfig gCfg;
+bool gHaveShown = false;    // a photo is on screen, so a loading badge makes sense
+bool gLoadingShown = false;  // the loading badge is on screen
+
+void showLoading(int step) {
+  if (!gHaveShown || gLoadingShown) return;
+  gLoadingShown = true;
+  ui::loadingBadge(step < 0 ? "Loading previous photo..." : "Loading next photo...");
+}
+
 // ---------------------------------------------------------------- inputs ----
 
 struct Button {
   int pin;
   bool down = false;
-  uint32_t changedAt = 0;
+  bool raw = false;        // last sampled level
+  uint32_t rawSince = 0;   // when `raw` last changed
   uint32_t pressedAt = 0;
   bool longFired = false;
 };
 
 enum class Press { None, Short, Long };
 
-Button gBtnNext{kPinBtnNext}, gBtnPrev{kPinBtnPrev}, gBtnBoot{kPinBoot};
+Button gBtn1{kPinBtn1}, gBtn2{kPinBtn2}, gBtnBoot{kPinBoot};
+
+// GPIO36/39 see short low glitches while WiFi switches its radio, so a level
+// only counts once it has read the same, three times over, for 30 ms.
+bool readPressed(int pin) {
+  return digitalRead(pin) == LOW && digitalRead(pin) == LOW && digitalRead(pin) == LOW;
+}
 
 // Debounced; Short fires on release, Long fires once while still held.
 Press pollButton(Button& b, uint32_t longMs) {
   const uint32_t now = millis();
-  const bool raw = digitalRead(b.pin) == LOW;
-  if (raw != b.down && now - b.changedAt > 30) {
+  const bool raw = readPressed(b.pin);
+  if (raw != b.raw) {
+    b.raw = raw;
+    b.rawSince = now;
+  }
+  if (raw != b.down && now - b.rawSince >= 30) {
     b.down = raw;
-    b.changedAt = now;
     if (raw) {
       b.pressedAt = now;
       b.longFired = false;
@@ -77,7 +97,19 @@ Press pollButton(Button& b, uint32_t longMs) {
 uint32_t gLastTouchPoll = 0;
 uint32_t gTouchReleasedAt = 0;
 bool gTouchDown = false;
+bool gTouchCandidate = false;  // pressed on the previous poll; a tap needs two in a row
 bool gTouchCalibrated = false;
+
+// Uncalibrated press check. A bad read on the shared SPI bus gives a pressure
+// of 4095 or more (the second pressure sample reads 0) and coordinates at the
+// rails; a finger gives neither.
+bool rawTouchPressed() {
+  const uint16_t z = tft.getTouchRawZ();
+  if (z <= 600 || z >= 4095) return false;
+  uint16_t x = 0, y = 0;
+  tft.getTouchRaw(&x, &y);
+  return x > 50 && x < 4045 && y > 50 && y < 4045;
+}
 
 // Left third = previous, middle = pause, right third = next. Without a
 // calibration any tap means "next".
@@ -87,10 +119,14 @@ void pollTouch() {
   gLastTouchPoll = now;
 
   uint16_t x = 0, y = 0;
-  bool pressed = gTouchCalibrated ? tft.getTouch(&x, &y) : tft.getTouchRawZ() > 600;
+  bool pressed = gTouchCalibrated ? tft.getTouch(&x, &y) : rawTouchPressed();
   if (!pressed) {
     if (gTouchDown) gTouchReleasedAt = now;
-    gTouchDown = false;
+    gTouchDown = gTouchCandidate = false;
+    return;
+  }
+  if (!gTouchCandidate) {  // a single noisy reading isn't a tap
+    gTouchCandidate = true;
     return;
   }
   if (gTouchDown || now - gTouchReleasedAt < 150) return;
@@ -107,13 +143,16 @@ void pollTouch() {
   }
 }
 
+// BTN1 = previous, BTN2 = next (holding next pauses), unless swapped in the portal.
 void pollInputs() {
-  switch (pollButton(gBtnNext, 1200)) {
+  Button& next = gCfg.swapButtons ? gBtn1 : gBtn2;
+  Button& prev = gCfg.swapButtons ? gBtn2 : gBtn1;
+  switch (pollButton(next, 1200)) {
     case Press::Short: state::post(state::Cmd::Next); break;
     case Press::Long: state::post(state::Cmd::TogglePause); break;
     default: break;
   }
-  if (pollButton(gBtnPrev, 1200) == Press::Short) state::post(state::Cmd::Prev);
+  if (pollButton(prev, 1200) == Press::Short) state::post(state::Cmd::Prev);
   if (pollButton(gBtnBoot, 6000) == Press::Long) state::post(state::Cmd::FactoryReset);
   pollTouch();
 }
@@ -126,6 +165,7 @@ bool abortPrefetch() {
   pollInputs();
   if (immich::othersWaiting()) return true;
   state::Cmd c = state::peek();
+  if (c == state::Cmd::Next) showLoading(1);  // decoding off-screen, so the panel is free
   return c != state::Cmd::None && c != state::Cmd::Next && c != state::Cmd::TogglePause;
 }
 
@@ -256,7 +296,6 @@ size_t gBack = 0;            // 0 = showing the newest, n = n steps back
 bool gPaused = false;
 uint32_t gNextAt = 0;
 uint32_t gCfgVersion = 0;
-AppConfig gCfg;
 int gFailures = 0;
 bool gShowingPattern = false;
 String gScreenMessage;  // what's currently on screen if it isn't a photo
@@ -266,6 +305,7 @@ void showMessageOnce(const String& title, const String& l1 = "", const String& l
   String key = title + "|" + l1 + "|" + l2;
   if (key == gScreenMessage) return;
   gScreenMessage = key;
+  gLoadingShown = false;
   ui::message(title, l1, l2, "", color);
 }
 
@@ -298,6 +338,7 @@ void resetSlideshow() {
   gPage = 1;
   gHistory.clear();
   gBack = 0;
+  gHaveShown = gLoadingShown = false;
   gFailures = 0;
   gNextAt = 0;
   dropReady(false);
@@ -343,6 +384,8 @@ bool loadAsset(const Asset& a, bool prefetch, String& err, bool& aborted, bool& 
 }
 
 void finishShowing(const Asset& a, bool fromBuffer) {
+  gHaveShown = true;
+  gLoadingShown = false;
   if (fromBuffer) {
     gScreenMessage = "";
     fx::run(tft, fx::resolve(fx::fromName(gCfg.transition)));
@@ -433,8 +476,9 @@ void retryPrefetch() {
   prefetchNext();
 }
 
-// step: +1 next, -1 previous, 0 redraw the current photo.
-void advance(int step) {
+// step: +1 next, -1 previous, 0 redraw the current photo. `requested`: the
+// user asked for it, so say so on screen if the photo still has to download.
+void advance(int step, bool requested = false) {
   gShowingPattern = false;
 
   // Fast path: the next photo is already decoded.
@@ -465,6 +509,7 @@ void advance(int step) {
   }
 
   dropReady(true);  // the buffer is about to be overwritten
+  if (requested && step != 0) showLoading(step);
   String err;
   bool aborted, touched, buffered;
   if (loadAsset(asset, false, err, aborted, touched, buffered)) {
@@ -489,6 +534,7 @@ void advance(int step) {
     const Asset& cur = gHistory[gHistory.size() - 1 - gBack];
     if (loadAsset(cur, false, redrawErr, a2, t2, b2)) {
       if (b2) fx::run(tft, fx::Effect::WipeDown);
+      gLoadingShown = false;
     } else if (!a2) {
       log_w("redraw: %s", redrawErr.c_str());
     }
@@ -498,7 +544,7 @@ void advance(int step) {
   // A preview rejected at its header costs little, so try the next one right
   // away: otherwise next/prev presses seem to do nothing on a library with
   // many broken previews. Back off once nothing is working.
-  if (fresh && !touched && gFailures < kMaxQuickSkips) return advance(1);
+  if (fresh && !touched && gFailures < kMaxQuickSkips) return advance(1, requested);
   gNextAt = millis() + (gFailures >= kMaxQuickSkips ? kRetryAfterErrorMs : 1000);
 }
 
@@ -524,10 +570,10 @@ void handleCommands() {
   for (state::Cmd cmd = state::take(); cmd != state::Cmd::None; cmd = state::take()) {
     switch (cmd) {
       case state::Cmd::Next:
-        if (!gApMode) advance(1);
+        if (!gApMode) advance(1, true);
         break;
       case state::Cmd::Prev:
-        if (!gApMode) advance(-1);
+        if (!gApMode) advance(-1, true);
         break;
       case state::Cmd::TogglePause:
         gPaused = !gPaused;
@@ -543,6 +589,7 @@ void handleCommands() {
         break;
       case state::Cmd::TestPattern:
         ui::testPattern();
+        gLoadingShown = false;
         gShowingPattern = true;
         gScreenMessage = "";
         gNextAt = millis() + 60000;  // hold it for a minute
@@ -623,8 +670,8 @@ void setup() {
   digitalWrite(kPinSdCs, HIGH);
   pinMode(kPinLed, OUTPUT);
   digitalWrite(kPinLed, LOW);
-  pinMode(kPinBtnNext, INPUT);  // GPIO36/39 are input-only with no internal pull-ups
-  pinMode(kPinBtnPrev, INPUT);
+  pinMode(kPinBtn1, INPUT);  // GPIO36/39 are input-only with no internal pull-ups
+  pinMode(kPinBtn2, INPUT);
   pinMode(kPinBoot, INPUT_PULLUP);
 
   config::begin();
@@ -640,14 +687,14 @@ void setup() {
   }
 
   // Holding both buttons while powering up wipes all settings.
-  if (digitalRead(kPinBtnNext) == LOW && digitalRead(kPinBtnPrev) == LOW) {
+  if (digitalRead(kPinBtn1) == LOW && digitalRead(kPinBtn2) == LOW) {
     ui::message("Factory reset?", "Keep holding both buttons for 3 s", "", "", TFT_RED);
     uint32_t start = millis();
-    while (digitalRead(kPinBtnNext) == LOW && digitalRead(kPinBtnPrev) == LOW) {
+    while (digitalRead(kPinBtn1) == LOW && digitalRead(kPinBtn2) == LOW) {
       if (millis() - start > 3000) {
         config::erase();
         ui::message("Settings erased", "Release the buttons");
-        while (digitalRead(kPinBtnNext) == LOW || digitalRead(kPinBtnPrev) == LOW) delay(20);
+        while (digitalRead(kPinBtn1) == LOW || digitalRead(kPinBtn2) == LOW) delay(20);
         ESP.restart();
       }
       delay(20);

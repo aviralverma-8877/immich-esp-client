@@ -244,6 +244,9 @@ a{color:var(--accent)}
 <option value="box-out">Box out</option><option value="diagonal">Diagonal</option>
 </select>
 <label class="check"><input id="showDate" type="checkbox"> Show the date the photo was taken</label>
+<label for="swapButtons">Buttons</label>
+<select id="swapButtons"><option value="0">BTN1 previous, BTN2 next</option><option value="1">BTN1 next, BTN2 previous</option></select>
+<div class="hint">Hold the next button to pause or resume.</div>
 <div class="btns"><button class="primary" onclick="save('show')">Save slideshow</button></div>
 <div class="msg" id="showMsg"></div>
 </section>
@@ -317,7 +320,7 @@ function esc(s){return String(s).replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','
 async function load(){
   cfg=await api('/api/config');
   $('source').value=cfg.source;$('order').value=cfg.order;$('interval').value=cfg.intervalSec;
-  $('fill').value=cfg.fill?'1':'0';$('rotation').value=String(cfg.rotation);$('showDate').checked=cfg.showDate;$('transition').value=cfg.transition||'random';
+  $('fill').value=cfg.fill?'1':'0';$('rotation').value=String(cfg.rotation);$('showDate').checked=cfg.showDate;$('transition').value=cfg.transition||'random';$('swapButtons').value=cfg.swapButtons?'1':'0';
   $('colorBgr').value=cfg.colorBgr?'1':'0';$('colorInvert').value=cfg.colorInvert?'1':'0';
   $('serverUrl').value=cfg.serverUrl||'';$('apiKey').placeholder=cfg.apiKeySet?'Saved (leave blank to keep)':'Paste API key';
   $('insecureTls').checked=cfg.insecureTls;$('ssid').value=cfg.wifiSsid||'';
@@ -352,7 +355,7 @@ async function save(part){
   const b={},msg={show:'showMsg',immich:'immichMsg',wifi:'wifiMsg',device:'devMsg'}[part];
   if(part==='show'){
     const t=$('source').value;b.source=t;b.order=$('order').value;b.intervalSec=parseInt($('interval').value)||30;
-    b.fill=$('fill').value==='1';b.rotation=parseInt($('rotation').value);b.showDate=$('showDate').checked;b.transition=$('transition').value;
+    b.fill=$('fill').value==='1';b.rotation=parseInt($('rotation').value);b.showDate=$('showDate').checked;b.transition=$('transition').value;b.swapButtons=$('swapButtons').value==='1';
     if(['album','person','tag'].includes(t)){
       const o=$('item').selectedOptions[0];
       if(!o||!o.value){note(msg,'Pick an item from the list first',false);return;}

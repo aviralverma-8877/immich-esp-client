@@ -234,6 +234,18 @@ void pausedBadge(bool paused) {
   tft.fillRect(x + 11, y + 4, 4, 12, TFT_WHITE);
 }
 
+void loadingBadge(const String& text) {
+  const int pad = 6;
+  const int w = tft.textWidth(text, 2) + pad * 2;
+  const int h = tft.fontHeight(2) + 4;
+  const int x = (tft.width() - w) / 2, y = 6;
+  tft.fillRoundRect(x, y, w, h, 4, TFT_BLACK);
+  tft.setTextDatum(MC_DATUM);
+  tft.setTextColor(TFT_WHITE, TFT_BLACK);
+  tft.drawString(text, tft.width() / 2, y + h / 2, 2);
+  tft.setTextDatum(TL_DATUM);
+}
+
 String formatDate(const char* iso) {
   static const char* kMonths[] = {"Jan", "Feb", "Mar", "Apr", "May", "Jun",
                                   "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"};
