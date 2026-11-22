@@ -1,7 +1,7 @@
-// Immich photo frame for the "ESP32 RJ9 Adapter" board.
+// Immich photo frame for ESP32 boards with an SPI TFT (see board.h).
 //
 // loop() (core 1) runs the slideshow: it fetches batches of asset ids from
-// Immich, streams each preview JPEG straight into the ILI9341 and handles the
+// Immich, streams each preview JPEG straight into the panel and handles the
 // buttons and touch screen. The web portal runs in its own task on core 0.
 
 #include <Arduino.h>
@@ -13,6 +13,7 @@
 
 #include "app_config.h"
 #include "app_state.h"
+#include "board.h"
 #include "display_ui.h"
 #include "immich_client.h"
 #include "jpeg_stream.h"
@@ -22,12 +23,11 @@
 
 namespace {
 
-// Board pins (see ESP32-EasyEDA schematic, sheets "MCU" and "Buttons and LEDs").
-constexpr int kPinLed = 2;       // LED2, active high
-constexpr int kPinBtn1 = 39;     // BTN1, active low, external 10k pull-up
-constexpr int kPinBtn2 = 36;     // BTN2, active low, external 10k pull-up
-constexpr int kPinBoot = 0;      // BOOT1, active low
-constexpr int kPinSdCs = 33;     // SD card on the display module; keep it off the bus
+using board::kPinBoot;
+using board::kPinBtn1;
+using board::kPinBtn2;
+
+void setLed(bool on) { digitalWrite(board::kPinLed, on == board::kLedActiveHigh ? HIGH : LOW); }
 
 constexpr uint32_t kWifiConnectTimeoutMs = 20000;
 constexpr uint32_t kApRetryStaMs = 60000;
@@ -67,6 +67,7 @@ Button gBtn1{kPinBtn1}, gBtn2{kPinBtn2}, gBtnBoot{kPinBoot};
 // GPIO36/39 see short low glitches while WiFi switches its radio, so a level
 // only counts once it has read the same, three times over, for 30 ms.
 bool readPressed(int pin) {
+  if (pin < 0) return false;  // button not fitted on this board
   return digitalRead(pin) == LOW && digitalRead(pin) == LOW && digitalRead(pin) == LOW;
 }
 
@@ -229,10 +230,10 @@ bool connectStation(const AppConfig& cfg) {
 
   const uint32_t start = millis();
   while (WiFi.status() != WL_CONNECTED && millis() - start < kWifiConnectTimeoutMs) {
-    digitalWrite(kPinLed, (millis() / 250) % 2);
+    setLed((millis() / 250) % 2);
     delay(50);
   }
-  digitalWrite(kPinLed, LOW);
+  setLed(false);
   const bool ok = WiFi.status() == WL_CONNECTED;
   Serial.printf("[wifi] %s %s\n", cfg.wifiSsid.c_str(),
                 ok ? ("connected, " + WiFi.localIP().toString()).c_str() : "connect failed");
@@ -263,7 +264,7 @@ void maybeRoam(const AppConfig& cfg) {
 // In setup mode, periodically retry the saved network while nobody is using
 // the AP; once it connects, close the AP and start the slideshow.
 void serviceAccessPoint(const AppConfig& cfg) {
-  digitalWrite(kPinLed, (millis() / 500) % 2);
+  setLed((millis() / 500) % 2);
   // The setup page drives the station itself and restarts when it's done.
   if (cfg.wifiSsid.isEmpty() || portal::setupActive()) return;
 
@@ -275,7 +276,7 @@ void serviceAccessPoint(const AppConfig& cfg) {
     portal::setApMode(false);
     state::setAp(false, WiFi.localIP().toString());
     startMdns(cfg);
-    digitalWrite(kPinLed, LOW);
+    setLed(false);
     return;
   }
   if (WiFi.softAPgetStationNum() == 0 && millis() - gLastStaAttempt > kApRetryStaMs) {
@@ -364,7 +365,7 @@ bool ensureBuffer() {
 // (screen untouched), otherwise straight onto the panel.
 bool loadAsset(const Asset& a, bool prefetch, String& err, bool& aborted, bool& touched, bool& buffered) {
   aborted = touched = buffered = false;
-  digitalWrite(kPinLed, HIGH);
+  setLed(true);
   state::setLoading(true);
   bool ok = immich::fetchPreview(gCfg, a.id, [&](Stream& in, int len, String& e) {
     // Allocated after the response headers, i.e. after any TLS handshake.
@@ -378,7 +379,7 @@ bool loadAsset(const Asset& a, bool prefetch, String& err, bool& aborted, bool& 
     if (touched) gScreenMessage = "";
     return drawn;
   }, err);
-  digitalWrite(kPinLed, LOW);
+  setLed(false);
   state::setLoading(false);
   return ok;
 }
@@ -665,13 +666,21 @@ void applyConfigChanges() {
 
 void setup() {
   Serial.begin(115200);
+  Serial.printf("[boot] Immich Frame %s on %s\n", FW_VERSION, board::kName);
 
-  pinMode(kPinSdCs, OUTPUT);
-  digitalWrite(kPinSdCs, HIGH);
-  pinMode(kPinLed, OUTPUT);
-  digitalWrite(kPinLed, LOW);
-  pinMode(kPinBtn1, INPUT);  // GPIO36/39 are input-only with no internal pull-ups
-  pinMode(kPinBtn2, INPUT);
+  pinMode(board::kPinSdCs, OUTPUT);
+  digitalWrite(board::kPinSdCs, HIGH);
+  pinMode(board::kPinLed, OUTPUT);
+  setLed(false);
+  for (int pin : board::kPinLedOff) {
+    if (pin < 0) continue;
+    pinMode(pin, OUTPUT);
+    digitalWrite(pin, board::kLedActiveHigh ? LOW : HIGH);
+  }
+  if (board::kHasButtons) {
+    pinMode(kPinBtn1, INPUT);  // GPIO36/39 are input-only with no internal pull-ups
+    pinMode(kPinBtn2, INPUT);
+  }
   pinMode(kPinBoot, INPUT_PULLUP);
 
   config::begin();
@@ -687,7 +696,7 @@ void setup() {
   }
 
   // Holding both buttons while powering up wipes all settings.
-  if (digitalRead(kPinBtn1) == LOW && digitalRead(kPinBtn2) == LOW) {
+  if (board::kHasButtons && digitalRead(kPinBtn1) == LOW && digitalRead(kPinBtn2) == LOW) {
     ui::message("Factory reset?", "Keep holding both buttons for 3 s", "", "", TFT_RED);
     uint32_t start = millis();
     while (digitalRead(kPinBtn1) == LOW && digitalRead(kPinBtn2) == LOW) {

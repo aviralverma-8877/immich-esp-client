@@ -5,6 +5,13 @@ TFT on a shared SPI bus) that shows an Immich slideshow with random transitions,
 configured from a web portal.
 The board's EasyEDA Pro project is in `ESP32-EasyEDA/`.
 
+Also builds for the Hosyond / LCDWiki 3.5" ESP32-32E display (E32R35T:
+ST7796U 320x480, XPT2046 touch): `pio run -e e32r35t -t upload`. Board pins
+are in `src/board.h`. That board has no user buttons, so control it by touch,
+from the portal, or by holding BOOT for 6 s to factory reset. A 320x480
+off-screen buffer doesn't fit in RAM without PSRAM, so photos draw straight
+to the panel, with no transitions or prefetch.
+
 ## Install from the browser
 
 Open **https://aviralverma-8877.github.io/immich-esp-client/** in Chrome or

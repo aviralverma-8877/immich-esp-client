@@ -2,6 +2,8 @@
 
 #include <Arduino.h>
 
+#include "board.h"
+
 // What the slideshow pulls images from.
 enum class Source : uint8_t { All, Album, Person, Tag, Favorites };
 // Order in which assets are shown.
@@ -31,8 +33,8 @@ struct AppConfig {
   bool swapButtons = false;      // false: BTN1 previous, BTN2 next; true: the reverse
 
   // Panel colour fixes: identical-looking ST7789 modules differ in these.
-  bool colorBgr = true;      // panel expects blue-green-red (true for this board's ST7789)
-  bool colorInvert = false;  // panel needs display inversion
+  bool colorBgr = board::kDefaultBgr;        // panel expects blue-green-red
+  bool colorInvert = board::kDefaultInvert;  // panel needs display inversion
 
   // Portal
   String adminPass;  // optional HTTP basic auth password (user "admin")

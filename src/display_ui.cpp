@@ -2,6 +2,8 @@
 
 #include <qrcode.h>
 
+#include "board.h"
+
 TFT_eSPI tft;
 
 namespace ui {
@@ -148,10 +150,9 @@ void begin(uint8_t rotation, bool bgr, bool invert) {
 void applyPanel(uint8_t rotation, bool bgr, bool invert) {
   tft.setRotation(rotation);
   // setRotation() writes MADCTL with the compile-time RGB order; rewrite it
-  // with the chosen order. Values mirror TFT_eSPI's ST7789_Rotation.h.
-  static const uint8_t kMadctl[4] = {0x00, 0x40 | 0x20, 0x40 | 0x80, 0x20 | 0x80};
+  // with the chosen order, using the panel driver's rotation table.
   tft.writecommand(0x36);
-  tft.writedata(kMadctl[rotation & 3] | (bgr ? 0x08 : 0x00));
+  tft.writedata(board::kMadctl[rotation & 3] | (bgr ? 0x08 : 0x00));
   tft.invertDisplay(invert);
 }
 
