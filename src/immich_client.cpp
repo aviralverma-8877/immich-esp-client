@@ -35,15 +35,23 @@ class NetLock {
 // Reads a response body, sleeping while it waits for data. Stream::timedRead()
 // busy-waits instead, and ArduinoJson reads byte by byte: on a slow response
 // the portal task then hogs core 0 until the task watchdog resets the chip.
+//
+// Buffered: ArduinoJson reads one byte per readBytes() call, and going to
+// the socket for each byte made a 100-photo page take 3.5 s instead of 0.2.
 class PatientStream : public Stream {
  public:
   PatientStream(WiFiClient& in, uint32_t timeoutMs) : in_(in), timeoutMs_(timeoutMs) {}
-  int available() override { return in_.available(); }
-  int read() override { return waitForData() ? in_.read() : -1; }
-  int peek() override { return waitForData() ? in_.peek() : -1; }
-  size_t readBytes(char* buf, size_t n) override {
+  int available() override { return (int)(len_ - pos_) + in_.available(); }
+  int read() override { return fill() ? buf_[pos_++] : -1; }
+  int peek() override { return fill() ? buf_[pos_] : -1; }
+  size_t readBytes(char* out, size_t n) override {
     size_t done = 0;
-    while (done < n && waitForData()) done += in_.readBytes(buf + done, min(n - done, (size_t)in_.available()));
+    while (done < n && fill()) {
+      const size_t k = min(n - done, len_ - pos_);
+      memcpy(out + done, buf_ + pos_, k);
+      pos_ += k;
+      done += k;
+    }
     return done;
   }
   size_t write(uint8_t) override { return 0; }
@@ -58,8 +66,20 @@ class PatientStream : public Stream {
     return true;
   }
 
+  bool fill() {
+    if (pos_ < len_) return true;
+    if (!waitForData()) return false;
+    const int got = in_.read(buf_, min(sizeof(buf_), (size_t)in_.available()));
+    if (got <= 0) return false;
+    pos_ = 0;
+    len_ = got;
+    return true;
+  }
+
   WiFiClient& in_;
   uint32_t timeoutMs_;
+  uint8_t buf_[1024];
+  size_t pos_ = 0, len_ = 0;
 };
 
 // Holds the transport and the HTTP client. The client is declared after the
@@ -293,6 +313,8 @@ bool listAssets(const AppConfig& cfg, const std::function<bool(const Asset&)>& e
   }
   // Small pages: the filtered JSON is held in memory, next to a TLS session.
   constexpr int kPageSize = 100;
+  const uint32_t t0 = millis();
+  size_t listed = 0;
   for (int page = 1; page > 0;) {
     JsonDocument doc;
     {
@@ -319,11 +341,13 @@ bool listAssets(const AppConfig& cfg, const std::function<bool(const Asset&)>& e
       Asset asset;
       copyAsset(a, asset);
       if (strlen(asset.id) != 36) continue;
+      listed++;
       if (!each(asset)) return true;
     }
     const char* next = doc["assets"]["nextPage"] | (const char*)nullptr;
     page = next ? atoi(next) : 0;
   }
+  Serial.printf("[immich] listed %u photos in %lu ms\n", (unsigned)listed, millis() - t0);
   return true;
 }
 

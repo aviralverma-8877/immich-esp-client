@@ -7,6 +7,7 @@
 #include <sd_diskio.h>
 
 #include <algorithm>
+#include <atomic>
 #include <vector>
 
 #include "board.h"
@@ -26,6 +27,7 @@ constexpr uint64_t kSpareBytes = 4ull << 20;
 
 SPIClass gSpi(VSPI);
 SemaphoreHandle_t gLock = xSemaphoreCreateRecursiveMutex();
+std::atomic<bool> gReading{false};
 
 struct Lock {
   Lock() { xSemaphoreTakeRecursive(gLock, portMAX_DELAY); }
@@ -82,7 +84,7 @@ bool mount() {
     gSpi.begin(board::kPinSdSck, board::kPinSdMiso, board::kPinSdMosi, board::kPinSdCs);
     gSpiReady = true;
   }
-  gMounted = SD.begin(board::kPinSdCs, gSpi, kSpiHz, "/sd", 4, false);
+  gMounted = SD.begin(board::kPinSdCs, gSpi, kSpiHz, "/sd", 6, false);
   return gMounted;
 }
 
@@ -109,12 +111,45 @@ void saveHave() {
   f.close();
 }
 
-// Works out from the files on the card which photos are stored.
+uint32_t idHash(const char* id) { return crc32_le(0, (const uint8_t*)id, 36); }
+
+// Works out from the files on the card which photos are stored: one pass
+// over the folders, rather than a lookup per photo (13 s for 2,300 photos).
 void rebuildHave() {
   gHave.assign((gCount + 7) / 8, 0);
-  for (size_t i = 0; i < gCount; i++) {
-    Asset a;
-    if (asset(i, a) && SD.exists(framePath(a.id))) setBit(gHave, i, true);
+  size_t n = 0, cap = 256;
+  uint32_t* ids = static_cast<uint32_t*>(malloc(cap * 4));
+  File root = SD.open(gGeomDir);
+  if (ids && root && root.isDirectory()) {
+    for (File dir = root.openNextFile(); dir; dir = root.openNextFile()) {
+      if (!dir.isDirectory()) continue;
+      for (File f = dir.openNextFile(); f; f = dir.openNextFile()) {
+        const char* name = f.name();
+        if (const char* slash = strrchr(name, '/')) name = slash + 1;
+        if (strlen(name) != 40 || strcmp(name + 36, ".565") != 0 || f.size() != frameBytes()) continue;
+        if (n == cap) {
+          uint32_t* more = static_cast<uint32_t*>(realloc(ids, cap * 2 * 4));
+          if (!more) break;
+          ids = more;
+          cap *= 2;
+        }
+        ids[n++] = idHash(name);
+      }
+    }
+  }
+  if (root) root.close();
+  if (ids) {
+    std::sort(ids, ids + n);
+    for (size_t i = 0; i < gCount && n; i++) {
+      Asset a;
+      if (asset(i, a) && std::binary_search(ids, ids + n, idHash(a.id))) setBit(gHave, i, true);
+    }
+    free(ids);
+  } else {  // no memory for the list: ask the card about each photo
+    for (size_t i = 0; i < gCount; i++) {
+      Asset a;
+      if (asset(i, a) && SD.exists(framePath(a.id))) setBit(gHave, i, true);
+    }
   }
   saveHave();
   gCachedN = countBits(gHave);
@@ -138,8 +173,6 @@ void loadHave() {
     rebuildHave();  // new size or scaling, or the list changed
   }
 }
-
-uint32_t idHash(const char* id) { return crc32_le(0, (const uint8_t*)id, 36); }
 
 // Deletes this size's frames of photos that are not in the new list.
 void pruneRemoved(const String& newIndex, size_t n) {
@@ -167,21 +200,59 @@ void pruneRemoved(const String& newIndex, size_t n) {
 
 }  // namespace
 
+// What the first sector of an unmountable card says. FAT (or unsure) means
+// "don't format": a card reset in the middle of a write can refuse to mount
+// for a while, and formatting it would throw away every stored photo.
+namespace {
+
+enum class Sector0 : uint8_t { Blank, Fat, Other, Unsure };
+
+Sector0 probeSector0(uint8_t pdrv) {
+  static uint8_t a[512], b[512];
+  if (disk_read(pdrv, a, 0, 1) != RES_OK || disk_read(pdrv, b, 0, 1) != RES_OK || memcmp(a, b, 512) != 0)
+    return Sector0::Unsure;  // unreliable reads
+  if (a[510] != 0x55 || a[511] != 0xAA) return Sector0::Blank;
+  if (memcmp(a + 82, "FAT32   ", 8) == 0 || memcmp(a + 54, "FAT", 3) == 0) return Sector0::Fat;  // a volume
+  switch (a[446 + 4]) {  // MBR: first partition's type
+    case 0x01: case 0x04: case 0x06: case 0x0B: case 0x0C: case 0x0E: return Sector0::Fat;
+    default: return Sector0::Other;  // exFAT/NTFS (0x07) and the rest
+  }
+}
+
+}  // namespace
+
 Card begin() {
   if (!board::kHasSd) return Card::None;
-  if (mount()) {
+  // A card left mid-write by a reset can take a moment to answer properly.
+  for (int attempt = 0; attempt < 4; attempt++) {
+    if (attempt) delay(300);
+    if (!mount()) continue;
     updateSpace();
     Serial.printf("[cache] SD card %llu MB, %llu MB free\n", gTotal >> 20, gFree >> 20);
-    return SD.exists(kMarker) ? Card::Ready : Card::NeedsFormat;
+    if (SD.exists(kMarker)) return Card::Ready;
+    if (SD.exists(kRoot)) {  // ours, marker lost: put it back, keep the photos
+      File m = SD.open(kMarker, FILE_WRITE);
+      if (m) m.close();
+      return Card::Ready;
+    }
+    return Card::NeedsFormat;  // a card the frame has never used: initial setup
   }
-  // Not mountable: tell an empty slot from a card without a FAT filesystem.
+  // Not mountable: an empty slot, a card for initial setup, or one to leave alone.
   const uint8_t pdrv = sdcard_init(board::kPinSdCs, &gSpi, kSpiHz);
   if (pdrv == 0xFF) return Card::None;
   const bool present = !(disk_initialize(pdrv) & STA_NOINIT);
+  const Sector0 kind = present ? probeSector0(pdrv) : Sector0::Unsure;
   sdcard_uninit(pdrv);
-  Serial.printf("[cache] %s\n", present ? "SD card has no readable filesystem" : "no SD card");
-  return present ? Card::NeedsFormat : Card::None;
+  if (!present) {
+    Serial.println("[cache] no SD card");
+    return Card::None;
+  }
+  static const char* const kKinds[] = {"blank", "FAT", "another filesystem", "unreadable"};
+  Serial.printf("[cache] SD card won't mount; first sector: %s\n", kKinds[(int)kind]);
+  return kind == Sector0::Blank || kind == Sector0::Other ? Card::NeedsFormat : Card::Unreadable;
 }
+
+
 
 bool format() {
   if (!board::kHasSd) return false;
@@ -310,22 +381,35 @@ bool asset(size_t i, Asset& out) {
   return true;
 }
 
-bool refresh(const AppConfig& cfg, bool& changed, String& err) {
+bool refresh(const AppConfig& cfg, bool& changed, String& err, jpeg::AbortFn abort) {
   changed = false;
-  if (!gOpen) {
-    err = "cache not open";
-    return false;
+  String albumDir;
+  {
+    Lock l;
+    if (!gOpen) {
+      err = "cache not open";
+      return false;
+    }
+    albumDir = gAlbumDir;  // if another album is opened meanwhile, this list is not for it
   }
-  const String tmp = gAlbumDir + "/index.new";
-  File f = SD.open(tmp, FILE_WRITE);
+  const String tmp = albumDir + "/index.new";
+  File f;
+  {
+    Lock l;
+    f = SD.open(tmp, FILE_WRITE);
+  }
   if (!f) {
     err = "cannot write to the SD card";
     return false;
   }
   uint32_t crc = 0;
   size_t n = 0;
-  bool writeFailed = false, truncated = false;
+  bool writeFailed = false, truncated = false, stopped = false;
   bool ok = immich::listAssets(cfg, [&](const Asset& a) {
+    if (abort && abort()) {
+      stopped = true;
+      return false;
+    }
     if (n >= kMaxAssets) {
       truncated = true;
       return false;
@@ -335,6 +419,7 @@ bool refresh(const AppConfig& cfg, bool& changed, String& err) {
     memcpy(rec, a.id, 36);
     memcpy(rec + 37, a.date, std::min<size_t>(strlen(a.date), 10));
     rec[47] = '\n';
+    Lock l;  // every card access, so it never overlaps a frame being read
     if (f.write((const uint8_t*)rec, kRec) != kRec) {
       writeFailed = true;
       return false;
@@ -343,18 +428,31 @@ bool refresh(const AppConfig& cfg, bool& changed, String& err) {
     n++;
     return true;
   }, err);
-  f.close();
+  {
+    Lock l;
+    f.close();
+  }
   if (writeFailed) {
     err = "writing to the SD card failed";
     ok = false;
   }
+  if (stopped) {
+    err = "stopped";
+    ok = false;
+  }
   if (!ok) {
+    Lock l;
     SD.remove(tmp);
     return false;
   }
   if (truncated) log_w("cache: album has more than %u photos; keeping the oldest", (unsigned)kMaxAssets);
 
   Lock l;  // swap the list in while nobody reads it
+  if (!gOpen || gAlbumDir != albumDir) {
+    removeIfThere(tmp);
+    err = "album changed while listing";
+    return false;
+  }
   changed = n != gCount || crc != gIndexCrc;
   if (!changed) {
     SD.remove(tmp);
@@ -388,7 +486,12 @@ bool store(const AppConfig& cfg, size_t i, jpeg::AbortFn abort, String& err, boo
     err = "SD card is full";
     return false;
   }
-  const String tmp = gGeomDir + "/part.tmp";
+  String geomDir;
+  {
+    Lock l;
+    geomDir = gGeomDir;
+  }
+  const String tmp = geomDir + "/part.tmp";
   File f;
   {
     Lock l;
@@ -423,7 +526,8 @@ bool store(const AppConfig& cfg, size_t i, jpeg::AbortFn abort, String& err, boo
     ok = false;
     err = "incomplete frame";
   }
-  if (!gOpen || i >= gCount) ok = false;  // closed or re-listed meanwhile (the caller stops us first)
+  // Closed, another album or size opened, or re-listed meanwhile: not ours to keep.
+  if (!gOpen || gGeomDir != geomDir || i >= gCount) ok = false;
   const String path = framePath(a.id);
   if (ok) {
     removeIfThere(path);
@@ -443,7 +547,13 @@ bool store(const AppConfig& cfg, size_t i, jpeg::AbortFn abort, String& err, boo
   return true;
 }
 
+bool reading() { return gReading; }
+
 bool show(TFT_eSPI& tft, size_t i, String& err, fx::Effect effect) {
+  struct Reading {
+    Reading() { gReading = true; }
+    ~Reading() { gReading = false; }
+  } busy;  // from the start: the storing task stops at its next step
   Asset a;
   if (!asset(i, a)) {
     err = "cannot read the photo list on the SD card";

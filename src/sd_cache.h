@@ -27,9 +27,10 @@
 namespace cache {
 
 enum class Card : uint8_t {
-  None,       // no slot on this board, or no card in it
-  Ready,      // mounted and ours
-  NeedsFormat // a card that is unreadable (no or exFAT filesystem) or not yet formatted by the frame
+  None,         // no slot on this board, or no card in it
+  Ready,        // mounted and ours
+  NeedsFormat,  // blank, exFAT or another filesystem, or a FAT card the frame has never used
+  Unreadable,   // a FAT32 card that won't mount: never formatted automatically
 };
 
 // Mounts the card.
@@ -63,10 +64,15 @@ bool asset(size_t i, Asset& out);
 
 // Re-lists the album from Immich; `changed` says whether it differs from the
 // stored list. Frames of photos that left the album are deleted.
-bool refresh(const AppConfig& cfg, bool& changed, String& err);
+// `abort` is polled for each photo listed (a big album takes a while).
+bool refresh(const AppConfig& cfg, bool& changed, String& err, jpeg::AbortFn abort = nullptr);
 
 // Downloads photo i's preview and stores it as a frame.
 bool store(const AppConfig& cfg, size_t i, jpeg::AbortFn abort, String& err, bool& aborted);
+
+// True while show() is reading a frame. The storing task holds everything
+// (download, decode, writes) until it is done: the card serves one at a time.
+bool reading();
 
 // Draws photo i from the card with a row effect (None: top to bottom at once).
 bool show(TFT_eSPI& tft, size_t i, String& err, fx::Effect effect = fx::Effect::None);

@@ -781,7 +781,19 @@ bool nextMissing(size_t& idx) {
 
 // Decoder callback in the storing task: gives way when told to stop or when
 // the portal wants the connection. FreeRTOS shares core 1 with the slideshow.
-bool abortStoring() { return !syncRunning() || immich::othersWaiting(); }
+bool abortStoring() {
+  // The slideshow is reading a frame: hold the download until it is done.
+  while (cache::reading() && syncRunning()) vTaskDelay(pdMS_TO_TICKS(5));
+  return !syncRunning() || immich::othersWaiting();
+}
+
+// Polled per photo while listing the album: stops only when told to. (The
+// portal gets its turn between pages; restarting a long listing for it
+// would never finish.)
+bool abortListing() {
+  while (cache::reading() && syncRunning()) vTaskDelay(pdMS_TO_TICKS(5));
+  return !syncRunning();
+}
 
 // Idle for a while, available to stopSync() throughout.
 void syncRest(uint32_t ms) {
@@ -803,12 +815,16 @@ void syncTask(void*) {
       continue;
     }
 
+    if (cache::reading()) {  // the card is busy showing a photo
+      syncRest(20);
+      continue;
+    }
     const uint32_t gen = gSyncGen;
     if (gListedGen != gen) {
       const AppConfig cfg = config::get();
       String err;
       bool changed = false;
-      if (cache::refresh(cfg, changed, err)) {
+      if (cache::refresh(cfg, changed, err, abortListing)) {
         listFailures = 0;
         cache::clearFailed();  // new session: try them again
         markSynced();
@@ -1512,9 +1528,13 @@ void setup() {
 
   startSyncTask();
   // The frame claims its card the first time it sees it.
-  if (cache::begin() == cache::Card::NeedsFormat) {
+  const cache::Card card = cache::begin();
+  if (card == cache::Card::NeedsFormat) {
     ui::splash("Preparing the SD card...");
     if (!cache::format()) state::setError("Could not format the SD card");
+  } else if (card == cache::Card::Unreadable) {
+    // Its photos may still be there: never erase it on our own.
+    state::setError("SD card can't be read. It was not erased; use Power > Format SD card to start it afresh");
   }
   syncCacheState();
   gOnlineSince = millis();
@@ -1564,6 +1584,18 @@ void loop() {
   if (since(gLastBatteryCheck) >= 30000) {
     gLastBatteryCheck = millis();
     checkBattery(3);
+  }
+  // A card left mid-write by a reset may not answer at start-up: try again
+  // for the first two minutes, and pick it up if it is ours (never
+  // formatting it here). Each try blocks for a moment, so not for ever.
+  static uint32_t lastCardTry = 0;
+  if (board::kHasSd && !cache::mounted() && millis() < 120000 && since(lastCardTry) >= 15000 && !gApMode) {
+    lastCardTry = millis();
+    if (cache::begin() == cache::Card::Ready) {
+      Serial.println("[cache] SD card found");
+      resetSlideshow();
+      syncCacheState();
+    }
   }
 
   if (gApMode) {
