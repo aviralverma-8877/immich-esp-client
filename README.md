@@ -56,18 +56,20 @@ Edge, plug the frame in over USB and press *Connect*. No toolchain needed.
 ## Build and flash
 
 ```sh
-pio run -e immich-frame -t upload        # first flash over USB (CH340)
+pio run -e immich-frame -t upload        # RJ9 Adapter: first flash over USB (CH340)
+pio run -e e32r35t -t upload             # Hosyond 3.5" display
 pio device monitor                       # logs at 115200
 ```
 
 Optional first-boot defaults go in `include/secrets.h` (copy
 `include/secrets.example.h`). Anything saved in the portal overrides them.
 Later updates can be uploaded from the portal (Device > Firmware update) using
-`.pio/build/immich-frame/firmware.bin`.
+`.pio/build/<env>/firmware.bin` for that board.
 
-To refresh the web installer, run `pio run -e release`. It builds without
-`include/secrets.h` and writes `docs/firmware/immich-frame.bin` plus the
-version in `docs/manifest.json`; commit both and GitHub Pages serves them.
+To refresh the web installer, run `pio run -e release-rj9 -e release-e32r35t`.
+They build without `include/secrets.h` and write one image per board,
+`docs/firmware/rj9.bin` and `docs/firmware/e32r35t.bin`, each with its own
+`docs/manifest-<board>.json`; commit them and GitHub Pages serves both.
 
 ## First run
 

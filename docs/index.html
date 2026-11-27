@@ -7,30 +7,36 @@
 <meta name="description" content="Flash the Immich Frame firmware to an ESP32 photo frame straight from Chrome or Edge.">
 <script type="module" src="https://unpkg.com/esp-web-tools@10/dist/web/install-button.js?module"></script>
 <style>
-:root{--bg:#f6f7f9;--card:#fff;--fg:#151a23;--muted:#5d6678;--line:#e1e5ec;--accent:#4250af;--accent-fg:#fff;--warn:#9a5b00;--code:#eef0f5}
-@media (prefers-color-scheme:dark){:root{--bg:#0c0e12;--card:#151922;--fg:#e8ebf1;--muted:#9aa3b5;--line:#262c39;--accent:#8c9cff;--accent-fg:#0c0e12;--warn:#ffb74d;--code:#1d2230}}
+:root{--bg:#f6f7f9;--card:#fff;--fg:#151a23;--muted:#5d6678;--line:#e1e5ec;--accent:#4250af;--accent-fg:#fff;--warn:#9a5b00;--code:#eef0f5;--sel:#eef0fb}
+@media (prefers-color-scheme:dark){:root{--bg:#0c0e12;--card:#151922;--fg:#e8ebf1;--muted:#9aa3b5;--line:#262c39;--accent:#8c9cff;--accent-fg:#0c0e12;--warn:#ffb74d;--code:#1d2230;--sel:#1c2236}}
 *{box-sizing:border-box}
 body{margin:0;background:var(--bg);color:var(--fg);font:16px/1.55 system-ui,-apple-system,"Segoe UI",Roboto,sans-serif}
-main{max-width:760px;margin:0 auto;padding:32px 16px 48px}
+main{max-width:820px;margin:0 auto;padding:32px 16px 48px}
 header{display:flex;gap:20px;align-items:center;margin-bottom:28px}
 header svg{flex:0 0 auto}
 h1{font-size:30px;line-height:1.2;margin:0}
 .tag{color:var(--muted);margin:6px 0 0}
 section{background:var(--card);border:1px solid var(--line);border-radius:14px;padding:20px 22px;margin-bottom:16px}
 h2{font-size:18px;margin:0 0 10px}
+h3{font-size:16px;margin:0}
 p{margin:8px 0}
 ol,ul{margin:8px 0;padding-left:22px}
 li{margin:6px 0}
-.install{display:flex;flex-wrap:wrap;gap:16px;align-items:center}
-.install .ver{color:var(--muted);font-size:14px}
+.boards{display:grid;grid-template-columns:repeat(auto-fit,minmax(300px,1fr));gap:14px;margin-top:12px}
+.board{border:1px solid var(--line);border-radius:12px;padding:16px;display:flex;flex-direction:column;gap:8px}
+.board .specs{color:var(--muted);font-size:14px;margin:0}
+.board ul{font-size:14px;margin:2px 0 6px}
+.board .go{margin-top:auto;display:flex;flex-wrap:wrap;gap:12px;align-items:center}
+.ver{color:var(--muted);font-size:13px}
 esp-web-install-button{--esp-tools-button-color:var(--accent);--esp-tools-button-text-color:var(--accent-fg);--esp-tools-button-border-radius:10px}
-.note{color:var(--warn)}
+.note{color:var(--warn);font-size:14px}
 code{background:var(--code);padding:1px 6px;border-radius:6px;font-size:14px}
 a{color:var(--accent)}
 .muted{color:var(--muted);font-size:14px}
 table{border-collapse:collapse;width:100%;font-size:15px}
 td{border-top:1px solid var(--line);padding:7px 6px;vertical-align:top}
 td:first-child{white-space:nowrap;color:var(--muted);width:1%}
+th{text-align:left;font-size:13px;color:var(--muted);font-weight:600;padding:12px 6px 4px}
 footer{color:var(--muted);font-size:13px;text-align:center;margin-top:24px}
 </style>
 </head>
@@ -48,23 +54,50 @@ footer{color:var(--muted);font-size:13px;text-align:center;margin-top:24px}
 
 <section>
   <h2>Install</h2>
-  <div class="install">
-    <esp-web-install-button manifest="./manifest.json">
-      <span slot="unsupported" class="note">Your browser can't talk to USB devices. Open this page in Chrome or Edge on a computer.</span>
-      <span slot="not-allowed" class="note">Web Serial needs a secure page: open this site over https.</span>
-    </esp-web-install-button>
-    <span class="ver" id="ver"></span>
+  <p>Pick your board. Each one has its own firmware; installing the wrong one leaves the screen blank.</p>
+  <div class="boards">
+    <div class="board">
+      <h3>ESP32 RJ9 Adapter</h3>
+      <p class="specs">ESP32-WROOM-32, 240&times;320 ST7789 display, two buttons</p>
+      <ul>
+        <li>Slideshow over WiFi with animated transitions</li>
+        <li>BTN1 / BTN2 for previous and next</li>
+      </ul>
+      <div class="go">
+        <esp-web-install-button manifest="./manifest-rj9.json">
+          <span slot="unsupported" class="note">Your browser can't talk to USB devices. Open this page in Chrome or Edge on a computer.</span>
+          <span slot="not-allowed" class="note">Web Serial needs a secure page: open this site over https.</span>
+        </esp-web-install-button>
+        <span class="ver" data-manifest="./manifest-rj9.json"></span>
+      </div>
+    </div>
+    <div class="board">
+      <h3>Hosyond 3.5" ESP32 display</h3>
+      <p class="specs">E32R35T / LCDWiki ESP32-32E, 320&times;480 ST7796 touch screen, microSD, LiPo charger</p>
+      <ul>
+        <li>Stores an album on the SD card and plays it with WiFi off</li>
+        <li>Deep-sleep power saver for running on a battery</li>
+        <li>Touch to change photos; BOOT for power</li>
+      </ul>
+      <div class="go">
+        <esp-web-install-button manifest="./manifest-e32r35t.json">
+          <span slot="unsupported" class="note">Your browser can't talk to USB devices. Open this page in Chrome or Edge on a computer.</span>
+          <span slot="not-allowed" class="note">Web Serial needs a secure page: open this site over https.</span>
+        </esp-web-install-button>
+        <span class="ver" data-manifest="./manifest-e32r35t.json"></span>
+      </div>
+    </div>
   </div>
-  <p class="muted">Plug the frame in over USB-C, press <b>Connect</b>, pick the serial port (usually "USB-SERIAL CH340") and choose <b>Install</b>. Erasing the device on first install is recommended.</p>
+  <p class="muted">Plug the frame in over USB, press <b>Connect</b>, pick the serial port (usually "USB-SERIAL CH340") and choose <b>Install</b>. Erasing the device on first install is recommended.</p>
 </section>
 
 <section>
   <h2>Before you start</h2>
   <ul>
-    <li><b>Hardware:</b> the ESP32 RJ9 Adapter board (ESP32-WROOM-32, 4 MB flash) with a 240&times;320 ST7789 display. Other ESP32 + ST7789 builds with the same wiring also work.</li>
     <li><b>Browser:</b> Chrome or Edge on Windows, macOS, Linux or ChromeOS. Phones and Firefox/Safari can't flash.</li>
-    <li><b>Cable:</b> a USB-C cable that carries data, not a charge-only one.</li>
+    <li><b>Cable:</b> a USB cable that carries data, not a charge-only one.</li>
     <li><b>Driver:</b> if no serial port shows up on Windows or macOS, install the <a href="https://www.wch-ic.com/downloads/CH341SER_EXE.html" target="_blank" rel="noopener">CH340 USB driver</a>.</li>
+    <li><b>3.5" board:</b> a microSD card is optional. Without one it streams over WiFi like the RJ9 board. <span class="note">The frame formats a card the first time it sees it, so use one with nothing you need on it.</span></li>
   </ul>
 </section>
 
@@ -76,6 +109,18 @@ footer{color:var(--muted);font-size:13px;text-align:center;margin-top:24px}
     <li>Press <b>Connect</b>. The frame checks the WiFi and your Immich login, shows its new address and restarts.</li>
     <li>Open that address (or <code>http://immich-frame.local</code>) to choose what to show: all photos, an album, a person, a tag or favourites, plus order, interval, transitions and orientation. The page also shows a preview of the photo on the frame.</li>
   </ol>
+</section>
+
+<section>
+  <h2>Battery and SD card (3.5" board)</h2>
+  <ul>
+    <li>With an <b>album</b> selected and a card fitted, each photo is downloaded once, resized for the screen and stored on the card. The slideshow keeps playing while the rest are stored.</li>
+    <li>Once the whole album is stored, WiFi turns off and the frame deep-sleeps between photos, waking only to show the next one from the card. The photo stays on screen while it sleeps.</li>
+    <li><b>Press BOOT</b> to bring the frame and its web page back online; press it again (or leave the page unused for a few minutes) to go back to power saver. While it sleeps, the web page shows "Frame disconnected".</li>
+    <li>The frame looks for album changes each time it starts and, if you choose, every few hours. Switching back to an album you showed before reuses the photos already on the card.</li>
+    <li>Below 5% battery it shows a charge-me screen and switches off; it starts again once the charger is connected.</li>
+    <li>The backlight uses most of the power: a lower <i>Screen brightness</i> in the portal makes the battery last much longer.</li>
+  </ul>
 </section>
 
 <section>
@@ -91,14 +136,22 @@ footer{color:var(--muted);font-size:13px;text-align:center;margin-top:24px}
 <section>
   <h2>Controls and troubleshooting</h2>
   <table>
+    <tr><th colspan="2">ESP32 RJ9 Adapter</th></tr>
     <tr><td>BTN1</td><td>Previous photo.</td></tr>
     <tr><td>BTN2</td><td>Next photo; hold for 1.2 s to pause or resume. Swap the two under <i>Slideshow &rarr; Buttons</i> in the portal.</td></tr>
+    <tr><td>Factory reset</td><td>Hold BTN1 + BTN2 for 3 s while powering on, or use <i>Device &rarr; Factory reset</i> in the portal.</td></tr>
+    <tr><th colspan="2">Hosyond 3.5" display</th></tr>
+    <tr><td>Touch</td><td>Left third: previous. Middle: pause or resume. Right third: next. Run <i>Device &rarr; Calibrate touch</i> once; until then any tap means next.</td></tr>
+    <tr><td>BOOT press</td><td>In power saver: go online and show the address and battery. Online: back to power saver.</td></tr>
+    <tr><td>BOOT double-tap</td><td>Show the battery level.</td></tr>
+    <tr><td>BOOT hold 2 s</td><td>Shut down (screen off). Press BOOT once to start again.</td></tr>
+    <tr><td>Factory reset</td><td><i>Device &rarr; Factory reset</i> in the portal.</td></tr>
+    <tr><th colspan="2">Both</th></tr>
     <tr><td>Change WiFi</td><td>In the portal, <i>Device &rarr; Re-run setup</i> restarts into the setup network once and keeps your other settings.</td></tr>
-    <tr><td>Factory reset</td><td>Hold BOOT for 6 s, or hold BTN1 + BTN2 for 3 s while powering on.</td></tr>
     <tr><td>Wrong colours</td><td>In the portal use <i>Display colours &rarr; Show test pattern</i> and switch colour order or inversion until the bars match their labels.</td></tr>
     <tr><td>Can't connect</td><td>Close other serial monitors (Arduino, PlatformIO) using the port. If flashing still fails to start, hold BOOT while pressing Connect.</td></tr>
     <tr><td>"Open on another device"</td><td>The portal can be used from one device at a time. Close it on the other device (or leave that tab in the background) and it frees up within 30 seconds.</td></tr>
-    <tr><td>Updates</td><td>Run this installer again, or upload a new firmware file from the portal's Device section.</td></tr>
+    <tr><td>Updates</td><td>Run this installer again, or upload a new firmware file from the portal's Device section. Settings are kept unless you choose to erase the device.</td></tr>
   </table>
 </section>
 
@@ -121,7 +174,9 @@ footer{color:var(--muted);font-size:13px;text-align:center;margin-top:24px}
   });
   g.innerHTML=svg+`<circle cx="${c}" cy="${c}" r="7" fill="var(--bg)"/>`;
 })();
-fetch('./manifest.json').then(r=>r.json()).then(m=>{document.getElementById('ver').textContent='Firmware '+m.version;}).catch(()=>{});
+document.querySelectorAll('.ver[data-manifest]').forEach(el=>{
+  fetch(el.dataset.manifest).then(r=>r.json()).then(m=>{el.textContent='Firmware '+m.version;}).catch(()=>{});
+});
 </script>
 </body>
 </html>

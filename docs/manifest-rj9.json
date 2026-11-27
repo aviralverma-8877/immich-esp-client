@@ -1,0 +1,16 @@
+{
+  "name": "Immich Frame for the ESP32 RJ9 Adapter",
+  "version": "0.4.0",
+  "new_install_prompt_erase": true,
+  "builds": [
+    {
+      "chipFamily": "ESP32",
+      "parts": [
+        {
+          "path": "firmware/rj9.bin",
+          "offset": 0
+        }
+      ]
+    }
+  ]
+}

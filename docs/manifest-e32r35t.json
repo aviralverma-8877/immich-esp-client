@@ -1,13 +1,13 @@
 {
-  "name": "Immich Frame",
-  "version": "0.3.6",
+  "name": "Immich Frame for the Hosyond 3.5\" ESP32 display",
+  "version": "0.4.0",
   "new_install_prompt_erase": true,
   "builds": [
     {
       "chipFamily": "ESP32",
       "parts": [
         {
-          "path": "firmware/immich-frame.bin",
+          "path": "firmware/e32r35t.bin",
           "offset": 0
         }
       ]

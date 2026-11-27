@@ -1,9 +1,9 @@
-"""PlatformIO post-build hook for `pio run -e release`.
+"""PlatformIO post-build hook for the release-* environments.
 
 Merges bootloader + partition table + boot_app0 + app into one image that the
 browser web flasher writes at offset 0, saves it as
-docs/firmware/immich-frame.bin (served by GitHub Pages) and stamps the
-firmware version into docs/manifest.json.
+docs/firmware/<custom_web_id>.bin (served by GitHub Pages) and writes that
+board's manifest, docs/manifest-<custom_web_id>.json, with the firmware version.
 """
 import json
 import re
@@ -15,7 +15,9 @@ Import("env")  # noqa: F821  (injected by PlatformIO)
 board = env.BoardConfig()  # noqa: F821
 PROJECT_DIR = Path(env["PROJECT_DIR"])  # noqa: F821
 DOCS = PROJECT_DIR / "docs"
-OUT_BIN = DOCS / "firmware" / "immich-frame.bin"
+WEB_ID = env.GetProjectOption("custom_web_id")  # noqa: F821
+WEB_NAME = env.GetProjectOption("custom_web_name", "Immich Frame")  # noqa: F821
+OUT_BIN = DOCS / "firmware" / (WEB_ID + ".bin")
 
 
 def fw_version():
@@ -44,14 +46,13 @@ def merge_and_publish(*_args, **_kwargs):
         "0x10000", str(build_dir / (env.subst("$PROGNAME") + ".bin")),  # noqa: F821
     ], check=True)
 
-    manifest = DOCS / "manifest.json"
-    m = json.loads(manifest.read_text()) if manifest.exists() else {}
-    m.update({
-        "name": "Immich Frame",
+    manifest = DOCS / ("manifest-%s.json" % WEB_ID)
+    m = {
+        "name": WEB_NAME,
         "version": fw_version(),
         "new_install_prompt_erase": True,
-        "builds": [{"chipFamily": "ESP32", "parts": [{"path": "firmware/immich-frame.bin", "offset": 0}]}],
-    })
+        "builds": [{"chipFamily": "ESP32", "parts": [{"path": "firmware/%s" % OUT_BIN.name, "offset": 0}]}],
+    }
     manifest.write_text(json.dumps(m, indent=2) + "\n")
     print("[merge_bin] docs/firmware/%s  version %s, %d KB" % (OUT_BIN.name, m["version"], OUT_BIN.stat().st_size // 1024))
 
