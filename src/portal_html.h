@@ -184,6 +184,7 @@ button.primary{background:var(--accent);border-color:var(--accent);color:#fff}
 button.danger{color:var(--err)}
 .btns{display:flex;flex-wrap:wrap;gap:8px;margin-top:14px}
 .msg{margin-top:10px;font-size:14px;min-height:1em}
+.banner{position:sticky;top:8px;z-index:5;margin-bottom:14px;padding:12px 14px;border-radius:12px;border:1px solid var(--err);background:var(--card);color:var(--fg);font-size:14px;box-shadow:0 2px 10px rgba(0,0,0,.15)}.banner b{color:var(--err)}
 .ok{color:var(--ok)}.err{color:var(--err)}
 .kv{display:grid;grid-template-columns:auto 1fr;gap:4px 12px;font-size:14px}
 .kv span:nth-child(odd){color:var(--muted)}
@@ -196,6 +197,7 @@ a{color:var(--accent)}
 </head>
 <body>
 <main>
+<div class="banner" id="offBanner" hidden><b>Frame disconnected.</b> It is probably in power saver, with WiFi off to save battery. Press <b>BOOT</b> on the frame once to bring it online; this page reconnects by itself.<div class="hint" id="offFor"></div></div>
 <h1>Immich Frame</h1>
 
 <section>
@@ -482,8 +484,24 @@ function thumb(s){
 
 function ago(s){return s<60?s+' s ago':s<3600?Math.round(s/60)+' min ago':Math.round(s/3600)+' h ago';}
 
+let lostAt=0;
+// No answer at all: the frame has switched WiFi off (power saver or shut down).
+function reachable(ok){
+  if(ok){lostAt=0;$('offBanner').hidden=true;return;}
+  if(!lostAt)lostAt=Date.now();
+  $('offBanner').hidden=false;
+  $('offFor').textContent='No answer for '+ago(Math.round((Date.now()-lostAt)/1000)).replace(' ago','')+'.';
+}
+
 async function status(){
-  const s=await api('/api/status');if(s.ok===false){if(s.error)note('nowMsg',s.error,false);return;}
+  let s;
+  try{
+    const c=new AbortController(),t=setTimeout(()=>c.abort(),6000);
+    const r=await fetch('/api/status',{signal:c.signal});clearTimeout(t);
+    s=await r.json();
+  }catch(e){reachable(false);return;}
+  reachable(true);
+  if(s.ok===false){if(s.error)note('nowMsg',s.error,false);return;}
   const rows=[];
   if(s.apMode)rows.push(['Mode','Setup access point - connect it to your WiFi below']);
   if(s.assetId)rows.push(['Photo',(s.assetDate?esc(s.assetDate)+' &middot; ':'')+'<a target="_blank" rel="noopener" href="'+esc(s.serverUrl)+'/photos/'+esc(s.assetId)+'">open in Immich</a>']);
