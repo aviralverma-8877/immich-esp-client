@@ -4,7 +4,27 @@
 
 #include "board.h"
 
-TFT_eSPI tft;
+Panel tft;
+
+#if defined(USE_HSPI_PORT)
+extern SPIClass spi;  // TFT_eSPI's own bus object (Processors/TFT_eSPI_ESP32.c)
+#define PANEL_SPI spi
+#else
+#define PANEL_SPI SPI
+#endif
+
+void Panel::attach() {
+  pinMode(TFT_CS, OUTPUT);
+  digitalWrite(TFT_CS, HIGH);
+#if defined(TOUCH_CS)
+  pinMode(TOUCH_CS, OUTPUT);
+  digitalWrite(TOUCH_CS, HIGH);
+#endif
+  pinMode(TFT_DC, OUTPUT);
+  digitalWrite(TFT_DC, HIGH);
+  PANEL_SPI.begin(TFT_SCLK, TFT_MISO, TFT_MOSI, -1);
+  _booted = false;  // a later init() must not set the bus up again
+}
 
 namespace ui {
 namespace {
@@ -147,6 +167,31 @@ void begin(uint8_t rotation, bool bgr, bool invert) {
   tft.fillScreen(TFT_BLACK);
 }
 
+void attach(uint8_t rotation, bool bgr, bool invert) {
+  tft.attach();
+  applyPanel(rotation, bgr, invert);  // only MADCTL and inversion: no visible change
+}
+
+void lowBattery(int percent) {
+  const int w = tft.width(), h = tft.height();
+  tft.fillScreen(TFT_BLACK);
+  const int bw = 132, bh = 64, x = (w - bw) / 2 - 6, y = h / 2 - bh / 2 - 24;
+  for (int i = 0; i < 3; i++) tft.drawRoundRect(x + i, y + i, bw - 2 * i, bh - 2 * i, 10 - i, TFT_WHITE);
+  tft.fillRoundRect(x + bw + 2, y + bh / 2 - 12, 9, 24, 3, TFT_WHITE);  // terminal
+  const int inner = bw - 14, fill = max(8, inner * constrain(percent, 0, 100) / 100);
+  tft.fillRoundRect(x + 7, y + 7, fill, bh - 14, 4, TFT_RED);
+  // Charging bolt across the middle.
+  const int cx = x + bw / 2, cy = y + bh / 2;
+  tft.fillTriangle(cx + 6, cy - 26, cx - 14, cy + 4, cx + 2, cy + 4, TFT_YELLOW);
+  tft.fillTriangle(cx - 2, cy - 4, cx + 14, cy - 4, cx - 6, cy + 26, TFT_YELLOW);
+  tft.setTextDatum(TC_DATUM);
+  tft.setTextColor(TFT_RED, TFT_BLACK);
+  tft.drawString("Battery low", w / 2, y + bh + 24, 4);
+  tft.setTextColor(0x9CD3, TFT_BLACK);
+  tft.drawString("Connect the charger", w / 2, y + bh + 58, 2);
+  tft.setTextDatum(TL_DATUM);
+}
+
 void applyPanel(uint8_t rotation, bool bgr, bool invert) {
   tft.setRotation(rotation);
   // setRotation() writes MADCTL with the compile-time RGB order; rewrite it
@@ -244,6 +289,31 @@ void loadingBadge(const String& text) {
   tft.setTextDatum(MC_DATUM);
   tft.setTextColor(TFT_WHITE, TFT_BLACK);
   tft.drawString(text, tft.width() / 2, y + h / 2, 2);
+  tft.setTextDatum(TL_DATUM);
+}
+
+void notice(const String& title, const String& l1, const String& l2, const String& l3) {
+  const int pad = 14, gap = 6;
+  const int th = tft.fontHeight(4), lh = tft.fontHeight(2);
+  int w = max(max(tft.textWidth(title, 4), tft.textWidth(l1, 2)), max(tft.textWidth(l2, 2), tft.textWidth(l3, 2)));
+  w = min<int>(w + pad * 2, tft.width() - 8);
+  const int lines = l3.length() ? 3 : l2.length() ? 2 : 1;
+  const int h = pad * 2 + th + lines * (lh + gap);
+  const int x = (tft.width() - w) / 2, y = (tft.height() - h) / 2;
+  tft.fillRoundRect(x, y, w, h, 8, TFT_BLACK);
+  tft.drawRoundRect(x, y, w, h, 8, 0x1C1F);  // Immich blue
+  tft.drawRoundRect(x + 1, y + 1, w - 2, h - 2, 7, 0x1C1F);
+  tft.setTextDatum(TC_DATUM);
+  tft.setTextColor(0x1C1F, TFT_BLACK);
+  tft.drawString(title, tft.width() / 2, y + pad, 4);
+  tft.setTextColor(TFT_WHITE, TFT_BLACK);
+  int ly = y + pad + th + gap;
+  tft.drawString(l1, tft.width() / 2, ly, 2);
+  if (l2.length()) tft.drawString(l2, tft.width() / 2, ly + lh + gap, 2);
+  if (l3.length()) {
+    tft.setTextColor(0x9CD3, TFT_BLACK);  // grey: secondary
+    tft.drawString(l3, tft.width() / 2, ly + 2 * (lh + gap), 2);
+  }
   tft.setTextDatum(TL_DATUM);
 }
 

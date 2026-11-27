@@ -286,6 +286,47 @@ bool fetchBatch(const AppConfig& cfg, int& page, Asset* out, size_t max, size_t&
   return ok;
 }
 
+bool listAssets(const AppConfig& cfg, const std::function<bool(const Asset&)>& each, String& err) {
+  if (cfg.source != Source::All && cfg.source != Source::Favorites && cfg.sourceId.isEmpty()) {
+    err = "No album, person or tag selected";
+    return false;
+  }
+  // Small pages: the filtered JSON is held in memory, next to a TLS session.
+  constexpr int kPageSize = 100;
+  for (int page = 1; page > 0;) {
+    JsonDocument doc;
+    {
+      NetLock lock;  // per page, so the portal gets a turn in between
+      if (!lock.ok()) {
+        err = "Network busy";
+        return false;
+      }
+      JsonDocument body;
+      body["page"] = page;
+      body["size"] = kPageSize;
+      body["order"] = "asc";
+      addSourceFilter(cfg, body);
+      JsonDocument filter;
+      filter["assets"]["items"][0]["id"] = true;
+      filter["assets"]["items"][0]["localDateTime"] = true;
+      filter["assets"]["nextPage"] = true;
+      if (!postJson(cfg, "/search/metadata", body, filter, doc, err)) {
+        noteKey(cfg, err);
+        return false;
+      }
+    }
+    for (JsonObjectConst a : doc["assets"]["items"].as<JsonArrayConst>()) {
+      Asset asset;
+      copyAsset(a, asset);
+      if (strlen(asset.id) != 36) continue;
+      if (!each(asset)) return true;
+    }
+    const char* next = doc["assets"]["nextPage"] | (const char*)nullptr;
+    page = next ? atoi(next) : 0;
+  }
+  return true;
+}
+
 bool listSources(const AppConfig& cfg, Source type, String& json, String& err) {
   NetLock lock;
   if (!lock.ok()) {
@@ -373,7 +414,10 @@ bool fetchRendition(const AppConfig& cfg, const char* assetId, const char* size,
     err = describeError(req, code);
     return false;
   }
-  const bool ok = sink(*req.http.getStreamPtr(), req.http.getSize(), req.http.header("Content-Type"), err);
+  // Sleeps while waiting for data and notices a closed connection; the
+  // transport's own reads spin, then wait out the full timeout.
+  PatientStream body(*req.transport, 10000);
+  const bool ok = sink(body, req.http.getSize(), req.http.header("Content-Type"), err);
   // Close outright: HTTPClient's own cleanup flushes, which downloads the rest
   // of an abandoned image while the connection is wanted elsewhere.
   req.transport->stop();

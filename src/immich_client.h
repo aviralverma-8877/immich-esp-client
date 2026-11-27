@@ -28,6 +28,10 @@ bool testConnection(const AppConfig& cfg, String& info);
 // in place. Random mode ignores it.
 bool fetchBatch(const AppConfig& cfg, int& page, Asset* out, size_t max, size_t& count, String& err);
 
+// Pages through every image of the configured source, oldest first, calling
+// `each` for each one; `each` returns false to stop early (not an error).
+bool listAssets(const AppConfig& cfg, const std::function<bool(const Asset&)>& each, String& err);
+
 // Lists albums, people or tags as a JSON array of {id, name, count?}.
 bool listSources(const AppConfig& cfg, Source type, String& json, String& err);
 

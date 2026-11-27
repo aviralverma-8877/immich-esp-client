@@ -1,5 +1,7 @@
 #pragma once
 
+#include <stdint.h>
+
 namespace portal {
 
 // Starts the web server in its own task. With apMode, also runs a captive
@@ -12,5 +14,9 @@ void setApMode(bool apMode);
 // True while the setup page is testing new WiFi credentials; the main loop
 // must leave the station interface alone until the device restarts.
 bool setupActive();
+
+// millis() of the last request from a browser; the frame stays online while
+// the portal is in use.
+uint32_t lastActivity();
 
 }  // namespace portal

@@ -7,9 +7,12 @@
 
 #include "app_config.h"
 #include "app_state.h"
+#include "board.h"
 #include "captive_dns.h"
 #include "immich_client.h"
 #include "portal_html.h"
+#include "power.h"
+#include "sd_cache.h"
 
 #ifndef FW_VERSION
 #define FW_VERSION "dev"
@@ -63,6 +66,7 @@ void logRequest() {
 constexpr uint32_t kSessionIdleMs = 30000;
 IPAddress gOwner;
 uint32_t gOwnerSeenAt = 0;
+volatile uint32_t gLastRequestAt = 0;
 
 const char kBusyHtml[] PROGMEM = R"HTML(<!doctype html><html lang="en"><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1"><meta http-equiv="refresh" content="10">
@@ -92,6 +96,7 @@ bool claimSession() {
 }
 
 bool authorized() {
+  gLastRequestAt = millis();
   // The setup AP has its own random WPA2 password shown only on the screen,
   // and phone captive-portal sheets can't show a basic-auth prompt.
   AppConfig cfg = config::get();
@@ -262,6 +267,13 @@ void handleGetConfig() {
   d["swapButtons"] = c.swapButtons;
   d["colorBgr"] = c.colorBgr;
   d["colorInvert"] = c.colorInvert;
+  d["backlight"] = c.backlight;
+  d["sdCache"] = c.sdCache;
+  d["syncHours"] = c.syncHours;
+  d["hasBacklight"] = board::kHasBacklight;
+  d["hasSd"] = board::kHasSd;
+  d["hasBattery"] = board::kHasBattery;
+  d["hasButtons"] = board::kHasButtons;
   d["adminPassSet"] = !c.adminPass.isEmpty();
   d["touchCalValid"] = c.touchCalValid;
   sendJson(200, d);
@@ -298,6 +310,9 @@ void handlePostConfig() {
   if (in["swapButtons"].is<bool>()) c.swapButtons = in["swapButtons"];
   if (in["colorBgr"].is<bool>()) c.colorBgr = in["colorBgr"];
   if (in["colorInvert"].is<bool>()) c.colorInvert = in["colorInvert"];
+  if (in["backlight"].is<int>()) c.backlight = constrain(in["backlight"].as<int>(), 5, 100);
+  if (in["sdCache"].is<bool>()) c.sdCache = in["sdCache"];
+  if (in["syncHours"].is<int>()) c.syncHours = constrain(in["syncHours"].as<int>(), 0, 24 * 30);
   if (c.rotation != oldRotation) c.touchCalValid = false;  // calibration is per orientation
 
   if (c.source == Source::All || c.source == Source::Favorites) {
@@ -339,6 +354,29 @@ void handleStatus() {
   d["nextReady"] = s.nextReady;
   d["serverUrl"] = c.serverUrl;
   d["uptime"] = millis() / 1000;
+  if (board::kHasBattery) {
+    const power::Battery b = power::battery();
+    JsonObject bat = d["battery"].to<JsonObject>();
+    bat["state"] = power::stateName(b.state);
+    bat["volts"] = roundf(b.volts * 100) / 100;
+    if (b.percent >= 0) bat["percent"] = b.percent;
+  }
+  if (board::kHasSd) {
+    const cache::Info ci = cache::info();
+    JsonObject sd = d["sd"].to<JsonObject>();
+    sd["mounted"] = ci.mounted;
+    if (ci.mounted) {
+      sd["freeMB"] = (uint32_t)(ci.freeBytes >> 20);
+      sd["cardMB"] = (uint32_t)(ci.cardBytes >> 20);
+    }
+    sd["active"] = s.cacheMode;
+    if (ci.open) {
+      sd["total"] = ci.total;
+      sd["cached"] = ci.cached;
+      sd["failed"] = ci.failed;
+      sd["syncing"] = s.syncing;
+    }
+  }
   d["freeHeap"] = ESP.getFreeHeap();
   d["minFreeHeap"] = ESP.getMinFreeHeap();
   sendJson(200, d);
@@ -470,6 +508,9 @@ void handleCmd() {
   else if (c == "reboot") cmd = state::Cmd::Reboot;
   else if (c == "factory") cmd = state::Cmd::FactoryReset;
   else if (c == "setup") cmd = state::Cmd::SetupMode;
+  else if (c == "offline") cmd = state::Cmd::GoOffline;
+  else if (c == "shutdown") cmd = state::Cmd::Shutdown;
+  else if (c == "formatsd") cmd = state::Cmd::FormatSd;
   if (cmd == state::Cmd::None) return sendError(400, "Unknown command");
   const state::Status s = state::get();  // before the command changes it
   state::post(cmd);
@@ -580,5 +621,7 @@ void begin(bool apMode) {
 void setApMode(bool apMode) { gApMode = apMode; }
 
 bool setupActive() { return gSetup == SetupState::Connecting || gSetup == SetupState::Connected; }
+
+uint32_t lastActivity() { return gLastRequestAt; }
 
 }  // namespace portal

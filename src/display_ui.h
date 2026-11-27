@@ -2,11 +2,26 @@
 
 #include <TFT_eSPI.h>
 
-extern TFT_eSPI tft;
+// TFT_eSPI that can also take over a panel that is already set up.
+class Panel : public TFT_eSPI {
+ public:
+  // After a power-saver deep sleep the panel is still powered, configured
+  // and showing the last photo: set up the bus and pins as init() does,
+  // without its reset and init commands, so the picture stays.
+  void attach();
+};
+
+extern Panel tft;
 
 namespace ui {
 
 void begin(uint8_t rotation, bool bgr, bool invert);
+// begin() for a panel that kept its picture through deep sleep.
+void attach(uint8_t rotation, bool bgr, bool invert);
+
+// Full screen: an almost empty battery with a charging bolt, as phones show
+// when they are too flat to start.
+void lowBattery(int percent);
 
 // Applies orientation and the panel colour fixes; safe to call at runtime.
 void applyPanel(uint8_t rotation, bool bgr, bool invert);
@@ -41,6 +56,10 @@ void pausedBadge(bool paused);
 // Small notice centred at the top, drawn over the current image while the
 // next one downloads; the next image repaints it.
 void loadingBadge(const String& text);
+
+// Box in the middle of the screen, drawn over the current image: a title in
+// the accent colour and up to three lines below it.
+void notice(const String& title, const String& l1, const String& l2 = "", const String& l3 = "");
 
 // "2026-09-25" -> "25 Sep 2026"; returns "" for malformed input.
 String formatDate(const char* isoDate);

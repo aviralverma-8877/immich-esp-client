@@ -5,7 +5,14 @@
 // Shared between the slideshow (loop task) and the web portal task.
 namespace state {
 
-enum class Cmd : uint8_t { None, Next, Prev, TogglePause, Reload, CalibrateTouch, Reboot, FactoryReset, TestPattern, SetupMode };
+enum class Cmd : uint8_t {
+  None, Next, Prev, TogglePause, Reload, CalibrateTouch, Reboot, FactoryReset, TestPattern, SetupMode,
+  GoOnline,    // BOOT pressed: WiFi and the portal back on
+  GoOffline,   // portal: WiFi off now (album must be stored)
+  Shutdown,    // BOOT held, or the portal: deep sleep until BOOT is pressed
+  FormatSd,    // portal: erase and format the SD card
+  ShowBattery, // BOOT double-tapped: battery level on screen
+};
 
 struct Status {
   bool apMode = false;
@@ -19,6 +26,8 @@ struct Status {
   uint32_t skipped = 0;
   bool loading = false;    // a preview is downloading/decoding right now
   bool nextReady = false;  // the next photo is decoded and waiting
+  bool cacheMode = false;  // the album plays from the SD card
+  bool syncing = false;    // photos are still being stored on the card
 };
 
 void begin();
@@ -38,5 +47,6 @@ void setError(const String& err);
 void countSkipped();
 void setLoading(bool loading);
 void setNextReady(bool ready);
+void setCache(bool cacheMode, bool syncing);
 
 }  // namespace state

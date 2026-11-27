@@ -18,18 +18,26 @@ namespace board {
 #if defined(BOARD_E32R35T)
 
 constexpr const char* kName = "Hosyond 3.5\" ESP32 (E32R35T)";
-// RGB LED, common anode: R=22, G=16, B=17, all active low. Blue is the status LED.
-constexpr int kPinLed = 17;
+constexpr int kPinLed = -1;  // no single status LED
 constexpr bool kLedActiveHigh = false;
-constexpr int kPinLedOff[] = {22, 16};  // other channels, held off
+// RGB LED, common anode: unused, so its pins are driven high (off) and held
+// that way through sleep.
+constexpr int kPinLedOff[] = {22, 16, 17};
 constexpr int kPinBtn1 = -1;  // no user buttons; touch and BOOT only
 constexpr int kPinBtn2 = -1;
 constexpr int kPinBoot = 0;
-constexpr int kPinSdCs = 5;   // microSD on VSPI; keep it deselected
+constexpr int kPinTouchIrq = 36;  // XPT2046 PENIRQ, low while touched; wakes the chip from light sleep
+// microSD on VSPI, separate from the panel's HSPI bus.
+constexpr int kPinSdCs = 5, kPinSdSck = 18, kPinSdMiso = 19, kPinSdMosi = 23;
+constexpr bool kHasSd = true;
 // TFT_eSPI's ST7796_Rotation.h, without the colour-order bit.
 constexpr uint8_t kMadctl[4] = {0x40, 0x20, 0x80, 0x40 | 0x80 | 0x20};
 constexpr bool kDefaultBgr = true;
 constexpr bool kDefaultInvert = false;
+constexpr int kPinBacklight = 27;  // TFT_BL, PWM dimmable
+// Battery sense on ADC1 through a 1:2 divider; the on-board charger has no status pin.
+constexpr int kPinBattery = 34;
+constexpr float kBatteryDivider = 2.0f;
 
 #else  // BOARD_RJ9_ADAPTER
 
@@ -41,14 +49,22 @@ constexpr int kPinLedOff[] = {-1};
 constexpr int kPinBtn1 = 39;  // BTN1, active low, external 10k pull-up
 constexpr int kPinBtn2 = 36;  // BTN2, active low, external 10k pull-up
 constexpr int kPinBoot = 0;   // BOOT1, active low
-constexpr int kPinSdCs = 33;  // SD card on the display module; keep it off the bus
+constexpr int kPinTouchIrq = -1;
+// SD card on the display module shares the panel's SPI bus; kept deselected.
+constexpr int kPinSdCs = 33, kPinSdSck = -1, kPinSdMiso = -1, kPinSdMosi = -1;
+constexpr bool kHasSd = false;
 // TFT_eSPI's ST7789_Rotation.h, without the colour-order bit.
 constexpr uint8_t kMadctl[4] = {0x00, 0x40 | 0x20, 0x40 | 0x80, 0x20 | 0x80};
 constexpr bool kDefaultBgr = true;  // this board's ST7789 is BGR
 constexpr bool kDefaultInvert = false;
+constexpr int kPinBacklight = -1;  // backlight wired always on
+constexpr int kPinBattery = -1;    // no battery
+constexpr float kBatteryDivider = 1.0f;
 
 #endif
 
 constexpr bool kHasButtons = kPinBtn1 >= 0 && kPinBtn2 >= 0;
+constexpr bool kHasBacklight = kPinBacklight >= 0;
+constexpr bool kHasBattery = kPinBattery >= 0;
 
 }  // namespace board

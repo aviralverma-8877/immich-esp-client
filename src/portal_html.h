@@ -177,6 +177,8 @@ input,select{width:100%;padding:9px 10px;border:1px solid var(--line);border-rad
 .row{display:flex;gap:10px}.row>*{flex:1}
 .check{display:flex;align-items:center;gap:8px;margin-top:12px;color:var(--fg);font-size:14px}
 .check input{width:auto}
+.meter{height:6px;margin-top:5px;border-radius:3px;background:var(--line);overflow:hidden}.meter span{display:block;height:100%;background:var(--accent)}
+input[type=range]{padding:0;border:0;background:none;accent-color:var(--accent)}
 button{padding:9px 14px;border-radius:8px;border:1px solid var(--line);background:var(--bg);color:var(--fg);font:inherit;cursor:pointer}
 button.primary{background:var(--accent);border-color:var(--accent);color:#fff}
 button.danger{color:var(--err)}
@@ -242,11 +244,13 @@ a{color:var(--accent)}
 <option value="slide-down">Slide in from top</option><option value="slide-up">Slide in from bottom</option>
 <option value="blinds">Blinds</option><option value="dissolve">Dissolve</option>
 <option value="box-out">Box out</option><option value="diagonal">Diagonal</option>
+<option value="split">Split from the middle</option><option value="curtain">Curtain</option><option value="scanlines">Scanlines</option>
 </select>
+<div class="hint">Photos played from the SD card use the effects that reveal whole rows (wipe down/up, blinds, split, curtain, scanlines); others are swapped for one of those at random.</div>
 <label class="check"><input id="showDate" type="checkbox"> Show the date the photo was taken</label>
-<label for="swapButtons">Buttons</label>
+<div id="btnRow"><label for="swapButtons">Buttons</label>
 <select id="swapButtons"><option value="0">BTN1 previous, BTN2 next</option><option value="1">BTN1 next, BTN2 previous</option></select>
-<div class="hint">Hold the next button to pause or resume.</div>
+<div class="hint">Hold the next button to pause or resume.</div></div>
 <div class="btns"><button class="primary" onclick="save('show')">Save slideshow</button></div>
 <div class="msg" id="showMsg"></div>
 </section>
@@ -262,6 +266,21 @@ a{color:var(--accent)}
 <div class="hint">Show the test pattern, then change these until each bar matches its label and the background is black. Changes apply instantly.</div>
 <div class="btns"><button onclick="cmd('pattern')">Show test pattern</button><button onclick="cmd('next')">Back to photos</button></div>
 <div class="msg" id="colorMsg"></div>
+</section>
+
+<section id="powerSec" hidden>
+<h2>Power</h2>
+<div id="blRow"><label for="backlight">Screen brightness <span class="hint" id="blVal"></span></label>
+<input id="backlight" type="range" min="5" max="100" step="5" oninput="$('blVal').textContent=this.value+'%'" onchange="savePower()"></div>
+<div class="hint">The backlight uses the most power; lower brightness saves battery. Changes apply instantly.</div>
+<div id="sdRow">
+<label class="check"><input type="checkbox" id="sdCache" onchange="savePower()"> Keep the album on the SD card and switch WiFi off</label>
+<div class="hint">With an album selected, each photo is stored on the card once. When all are stored, WiFi turns off and the frame sleeps between photos. Press <b>BOOT</b> to bring it (and this page) back online for a few minutes; hold <b>BOOT</b> for 2 s to shut down, press it again to start.</div>
+<label for="syncHours">Check the album for changes</label>
+<select id="syncHours" onchange="savePower()"><option value="0">Only when BOOT is pressed</option><option value="6">Every 6 hours</option><option value="12">Every 12 hours</option><option value="24">Once a day</option><option value="168">Once a week</option></select>
+</div>
+<div class="btns"><button id="offBtn" onclick="cmd('offline')">Go offline now</button><button onclick="if(confirm('Shut the frame down? Press BOOT on the frame to start it again.'))cmd('shutdown')">Shut down</button><button id="fmtBtn" class="danger" onclick="if(confirm('Erase everything on the SD card and format it?'))cmd('formatsd')">Format SD card</button></div>
+<div class="msg" id="powerMsg"></div>
 </section>
 
 <section>
@@ -322,6 +341,11 @@ async function load(){
   $('source').value=cfg.source;$('order').value=cfg.order;$('interval').value=cfg.intervalSec;
   $('fill').value=cfg.fill?'1':'0';$('rotation').value=String(cfg.rotation);$('showDate').checked=cfg.showDate;$('transition').value=cfg.transition||'random';$('swapButtons').value=cfg.swapButtons?'1':'0';
   $('colorBgr').value=cfg.colorBgr?'1':'0';$('colorInvert').value=cfg.colorInvert?'1':'0';
+  $('powerSec').hidden=false;$('blRow').hidden=!cfg.hasBacklight;$('sdRow').hidden=!cfg.hasSd;$('offBtn').hidden=!cfg.hasSd;$('fmtBtn').hidden=!cfg.hasSd;
+  $('backlight').value=cfg.backlight;$('blVal').textContent=cfg.backlight+'%';
+  $('sdCache').checked=cfg.sdCache;$('syncHours').value=String(cfg.syncHours);
+  if($('syncHours').value!==String(cfg.syncHours))$('syncHours').value='24';
+  $('btnRow').hidden=cfg.hasButtons===false;
   $('serverUrl').value=cfg.serverUrl||'';$('apiKey').placeholder=cfg.apiKeySet?'Saved (leave blank to keep)':'Paste API key';
   $('insecureTls').checked=cfg.insecureTls;$('ssid').value=cfg.wifiSsid||'';
   $('wifiPass').placeholder=cfg.wifiPassSet?'Saved (leave blank to keep)':'';
@@ -380,6 +404,11 @@ async function saveColors(){
   note('colorMsg',r.ok?'Applied':'Failed: '+(r.error||''),r.ok);
 }
 
+async function savePower(){
+  const r=await post('/api/config',{backlight:parseInt($('backlight').value),sdCache:$('sdCache').checked,syncHours:parseInt($('syncHours').value)});
+  note('powerMsg',r.ok?'Applied':'Failed: '+(r.error||''),r.ok);
+}
+
 async function test(){
   note('immichMsg','Testing...',true);
   const r=await post('/api/test',{serverUrl:$('serverUrl').value,apiKey:$('apiKey').value,insecureTls:$('insecureTls').checked});
@@ -418,6 +447,11 @@ async function cmd(c){
     watchNext(r.assetId);
     return;
   }
+  if(['offline','shutdown','formatsd'].includes(c)){
+    note('powerMsg',!r.ok?(r.error||'Failed'):c==='offline'?'Going offline - press BOOT on the frame to come back':c==='shutdown'?'Shutting down - press BOOT on the frame to start it':'Formatting the SD card - the album is stored again from scratch',r.ok);
+    if(c==='formatsd')setTimeout(status,3000);
+    return;
+  }
   if(!r.ok)note('devMsg',r.error||'Failed',false);
   else if(c==='calibrate')note('devMsg','Touch the arrows shown on the screen',true);
   else if(c==='reboot'||c==='factory')note('devMsg','Restarting...',true);
@@ -453,10 +487,21 @@ async function status(){
   const rows=[];
   if(s.apMode)rows.push(['Mode','Setup access point - connect it to your WiFi below']);
   if(s.assetId)rows.push(['Photo',(s.assetDate?esc(s.assetDate)+' &middot; ':'')+'<a target="_blank" rel="noopener" href="'+esc(s.serverUrl)+'/photos/'+esc(s.assetId)+'">open in Immich</a>']);
-  rows.push(['State',(s.paused?'Paused':'Playing')+(s.loading?' &middot; downloading a photo':s.nextReady?' &middot; next photo ready':'')]);
+  rows.push(['State',(s.paused?'Paused':'Playing')+(s.sd&&s.sd.active?(s.sd.syncing?' from the SD card &middot; storing the rest in the background':' from the SD card'):(s.loading?' &middot; downloading a photo':s.nextReady?' &middot; next photo ready':''))]);
   if(s.lastError)rows.push(['Last error','<span class="err">'+esc(s.lastError)+'</span> <span class="hint">('+ago(s.lastErrorAgo)+')</span>']);
   rows.push(['Shown',s.shown+' photos since start'+(s.skipped?' &middot; '+s.skipped+' skipped':'')]);
   rows.push(['Network',(s.ssid?esc(s.ssid)+' ('+s.rssi+' dBm'+(s.bssid?', AP '+esc(s.bssid):'')+') &middot; ':'')+esc(s.ip)]);
+  if(s.sd){const d=s.sd;
+    if(!d.mounted)rows.push(['SD card','no card']);
+    else{
+      const gb=mb=>mb>=1024?(mb/1024).toFixed(1)+' GB':mb+' MB',used=d.cardMB-d.freeMB,pct=d.cardMB?Math.min(100,used/d.cardMB*100):0;
+      rows.push(['SD card',gb(used)+' of '+gb(d.cardMB)+' used ('+(pct<1&&used>0?'&lt;1':Math.round(pct))+'%) &middot; '+gb(d.freeMB)+' free'+
+        '<div class="meter"><span style="width:'+Math.max(pct,used>0?1:0).toFixed(1)+'%"></span></div>']);
+      if(d.total===undefined)rows.push(['Offline album',d.active?'loading...':'not in use (needs an album and the option under Power)']);
+      else rows.push(['Offline album',d.cached+' of '+d.total+' photos stored'+(d.failed?' &middot; '+d.failed+' failed':'')+(d.syncing?' &middot; storing...':d.cached&&d.cached+d.failed>=d.total?' &middot; complete, WiFi turns off when idle':'')+
+        (d.total?'<div class="meter"><span style="width:'+(d.cached/d.total*100).toFixed(1)+'%"></span></div>':'')]);
+    }}
+  if(s.battery){const b=s.battery;rows.push(['Battery',b.state==='none'?'none fitted (on USB power)':(b.percent!=null?b.percent+'% &middot; ':'')+b.volts.toFixed(2)+' V &middot; '+esc(b.state)]);}
   rows.push(['Device','fw '+esc(s.version)+' &middot; heap '+Math.round(s.freeHeap/1024)+' KB (min '+Math.round(s.minFreeHeap/1024)+')']);
   $('status').innerHTML=rows.map(r=>'<span>'+r[0]+'</span><span>'+r[1]+'</span>').join('');
   thumb(s);

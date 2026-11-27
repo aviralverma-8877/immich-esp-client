@@ -36,6 +36,13 @@ struct AppConfig {
   bool colorBgr = board::kDefaultBgr;        // panel expects blue-green-red
   bool colorInvert = board::kDefaultInvert;  // panel needs display inversion
 
+  // Power
+  uint8_t backlight = 100;  // TFT backlight %, boards with a dimmable backlight
+  // Album on the SD card: once every photo is stored, WiFi goes off and the
+  // chip sleeps between photos. BOOT brings it back online.
+  bool sdCache = true;
+  uint16_t syncHours = 24;  // go online this often to pick up album changes; 0 = only on BOOT
+
   // Portal
   String adminPass;  // optional HTTP basic auth password (user "admin")
 

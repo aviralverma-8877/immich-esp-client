@@ -7,7 +7,8 @@ namespace {
 
 const char* const kNames[] = {"none",       "wipe-left",  "wipe-right", "wipe-down", "wipe-up",
                               "slide-left", "slide-right", "slide-down", "slide-up", "blinds",
-                              "dissolve",   "box-out",    "diagonal"};
+                              "dissolve",   "box-out",    "diagonal",  "split",    "curtain",
+                              "scanlines"};
 static_assert(sizeof(kNames) / sizeof(kNames[0]) == (size_t)Effect::Count, "names out of sync");
 
 // Spreads `steps` frames evenly over the duration.
@@ -122,7 +123,90 @@ void diagonal(TFT_eSPI& tft, const Pacer& p) {
   }
 }
 
+bool rows(const RowPush& push, int y, int n) { return n <= 0 || push(y, n); }
+
 }  // namespace
+
+bool isRowEffect(Effect e) {
+  switch (e) {
+    case Effect::WipeDown:
+    case Effect::WipeUp:
+    case Effect::Blinds:
+    case Effect::Split:
+    case Effect::Curtain:
+    case Effect::Scanlines: return true;
+    default: return false;
+  }
+}
+
+Effect resolveRows(Effect e) {
+  static const Effect kRow[] = {Effect::WipeDown, Effect::WipeUp, Effect::Blinds,
+                                Effect::Split,    Effect::Curtain, Effect::Scanlines};
+  if (e == Effect::None || isRowEffect(e)) return e;
+  return kRow[esp_random() % (sizeof(kRow) / sizeof(kRow[0]))];
+}
+
+bool runRows(Effect e, int H, const RowPush& push, uint32_t durationMs) {
+  const int steps = e == Effect::Blinds ? 16 : 24;
+  const Pacer p{millis(), durationMs, steps};
+  switch (e) {
+    case Effect::WipeDown:
+    case Effect::WipeUp: {
+      int prev = 0;
+      for (int i = 0; i < steps; i++) {
+        const int cur = H * (i + 1) / steps;
+        if (!rows(push, e == Effect::WipeDown ? prev : H - cur, cur - prev)) return false;
+        prev = cur;
+        p.wait(i);
+      }
+      return true;
+    }
+    case Effect::Blinds:
+      for (int i = 0; i < steps; i++) {
+        for (int y = i; y < H; y += steps)
+          if (!push(y, 1)) return false;
+        p.wait(i);
+      }
+      return true;
+    case Effect::Split: {
+      const int c = H / 2;
+      int prev = 0;  // rows uncovered each side of the middle
+      for (int i = 0; i < steps; i++) {
+        const int half = c * (i + 1) / steps;
+        if (!rows(push, c - half, half - prev) || !rows(push, c + prev, half - prev)) return false;
+        prev = half;
+        p.wait(i);
+      }
+      return rows(push, H - (H - 2 * c), H - 2 * c);  // odd height: the last row
+    }
+    case Effect::Curtain: {
+      const int c = H / 2;
+      int prev = 0;  // rows covered from each edge
+      for (int i = 0; i < steps; i++) {
+        const int k = c * (i + 1) / steps;
+        if (!rows(push, prev, k - prev) || !rows(push, H - k, k - prev)) return false;
+        prev = k;
+        p.wait(i);
+      }
+      return rows(push, c, H - 2 * c);
+    }
+    case Effect::Scanlines: {
+      static uint16_t order[480];
+      const int n = min(H, 480);
+      for (int i = 0; i < n; i++) order[i] = i;
+      for (int i = n - 1; i > 0; i--) std::swap(order[i], order[esp_random() % (i + 1)]);
+      int done = 0;
+      for (int s = 0; s < steps; s++) {
+        for (const int until = n * (s + 1) / steps; done < until; done++)
+          if (!push(order[done], 1)) return false;
+        p.wait(s);
+      }
+      return true;
+    }
+    default:
+      return push(0, H);
+  }
+}
 
 Effect fromName(const String& name) {
   for (int i = 0; i < (int)Effect::Count; i++)
@@ -160,6 +244,14 @@ void run(TFT_eSPI& tft, Effect e, uint32_t durationMs) {
     case Effect::Dissolve: dissolve(tft, p); break;
     case Effect::BoxOut: boxOut(tft, p); break;
     case Effect::Diagonal: diagonal(tft, p); break;
+    case Effect::Split:
+    case Effect::Curtain:
+    case Effect::Scanlines:
+      runRows(e, fb::height(), [&](int y, int n) {
+        fb::blit(tft, 0, y, fb::width(), n);
+        return true;
+      }, durationMs);
+      break;
     default: fb::blit(tft, 0, 0, fb::width(), fb::height()); break;
   }
   tft.setSwapBytes(swap);

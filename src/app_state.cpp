@@ -77,4 +77,10 @@ void countSkipped() {
   gStatus.skipped++;
 }
 
+void setCache(bool cacheMode, bool syncing) {
+  Guard g;
+  gStatus.cacheMode = cacheMode;
+  gStatus.syncing = syncing;
+}
+
 }  // namespace state

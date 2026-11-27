@@ -3,12 +3,20 @@
 // loop() (core 1) runs the slideshow: it fetches batches of asset ids from
 // Immich, streams each preview JPEG straight into the panel and handles the
 // buttons and touch screen. The web portal runs in its own task on core 0.
+//
+// With an album selected and an SD card fitted, the album is stored on the
+// card instead (sd_cache.h) and played from there. Once every photo is stored
+// and nobody is using the portal, WiFi goes off and the chip light-sleeps
+// between photos. BOOT: press to come back online, hold to shut down.
 
 #include <Arduino.h>
 #include <ESPmDNS.h>
 #include <Preferences.h>
 #include <WiFi.h>
+#include <rom/crc.h>
+#include <sys/time.h>
 
+#include <atomic>
 #include <deque>
 
 #include "app_config.h"
@@ -18,7 +26,9 @@
 #include "immich_client.h"
 #include "jpeg_stream.h"
 #include "portal.h"
+#include "power.h"
 #include "frame_buffer.h"
+#include "sd_cache.h"
 #include "transitions.h"
 
 namespace {
@@ -27,7 +37,7 @@ using board::kPinBoot;
 using board::kPinBtn1;
 using board::kPinBtn2;
 
-void setLed(bool on) { digitalWrite(board::kPinLed, on == board::kLedActiveHigh ? HIGH : LOW); }
+void setLed(bool on) { power::setBusy(on); }
 
 constexpr uint32_t kWifiConnectTimeoutMs = 20000;
 constexpr uint32_t kApRetryStaMs = 60000;
@@ -38,10 +48,18 @@ constexpr int kRoamMinGain = 8;     // dB stronger before it is worth reconnecti
 constexpr size_t kBatchSize = 20;
 constexpr size_t kHistorySize = 20;
 constexpr int kMaxQuickSkips = 8;  // consecutive unusable previews tried back to back
+constexpr uint32_t kShutdownHoldMs = 2000;          // hold BOOT this long to shut down
+constexpr uint32_t kOnlineIdleMs = 3 * 60 * 1000;   // online this long after BOOT is pressed
+constexpr uint32_t kPortalIdleMs = 60 * 1000;       // and this long after the last portal request
+constexpr uint32_t kApIdleMs = 10 * 60 * 1000;      // unused setup network gives way to the stored album
+constexpr uint32_t kInputQuietMs = 600;             // stay awake this long after a press or touch
+constexpr uint32_t kDoubleTapMs = 400;              // a second BOOT tap within this shows the battery
 
 AppConfig gCfg;
 bool gHaveShown = false;    // a photo is on screen, so a loading badge makes sense
 bool gLoadingShown = false;  // the loading badge is on screen
+uint32_t gNextAt = 0;        // millis() when the next photo is due
+uint32_t gNoticeUntil = 0;   // the "Web portal online" notice is up until then (0 = not shown)
 
 void showLoading(int step) {
   if (!gHaveShown || gLoadingShown) return;
@@ -63,6 +81,10 @@ struct Button {
 enum class Press { None, Short, Long };
 
 Button gBtn1{kPinBtn1}, gBtn2{kPinBtn2}, gBtnBoot{kPinBoot};
+uint32_t gLastInputAt = 0;  // last time any button or the touch screen was down
+uint32_t gBootTapAt = 0;    // a single BOOT tap waiting to see if a second follows (0 = none)
+
+uint32_t since(uint32_t t) { return millis() - t; }
 
 // GPIO36/39 see short low glitches while WiFi switches its radio, so a level
 // only counts once it has read the same, three times over, for 30 ms.
@@ -75,6 +97,7 @@ bool readPressed(int pin) {
 Press pollButton(Button& b, uint32_t longMs) {
   const uint32_t now = millis();
   const bool raw = readPressed(b.pin);
+  if (raw) gLastInputAt = now;
   if (raw != b.raw) {
     b.raw = raw;
     b.rawSince = now;
@@ -126,6 +149,7 @@ void pollTouch() {
     gTouchDown = gTouchCandidate = false;
     return;
   }
+  gLastInputAt = now;
   if (!gTouchCandidate) {  // a single noisy reading isn't a tap
     gTouchCandidate = true;
     return;
@@ -154,7 +178,26 @@ void pollInputs() {
     default: break;
   }
   if (pollButton(prev, 1200) == Press::Short) state::post(state::Cmd::Prev);
-  if (pollButton(gBtnBoot, 6000) == Press::Long) state::post(state::Cmd::FactoryReset);
+  // BOOT: tap to go online, double-tap for the battery, hold to shut down.
+  switch (pollButton(gBtnBoot, kShutdownHoldMs)) {
+    case Press::Short:
+      if (gBootTapAt && since(gBootTapAt) < kDoubleTapMs) {
+        gBootTapAt = 0;
+        state::post(state::Cmd::ShowBattery);
+      } else {
+        gBootTapAt = millis() | 1;
+      }
+      break;
+    case Press::Long:
+      gBootTapAt = 0;
+      state::post(state::Cmd::Shutdown);
+      break;
+    default: break;
+  }
+  if (gBootTapAt && !gBtnBoot.down && since(gBootTapAt) >= kDoubleTapMs) {
+    gBootTapAt = 0;
+    state::post(state::Cmd::GoOnline);
+  }
   pollTouch();
 }
 
@@ -175,14 +218,21 @@ bool abortDecode() {
   pollInputs();
   state::Cmd c = state::peek();
   return c == state::Cmd::Next || c == state::Cmd::Prev || c == state::Cmd::Reload ||
-         c == state::Cmd::Reboot || c == state::Cmd::FactoryReset;
+         c == state::Cmd::Reboot || c == state::Cmd::FactoryReset || c == state::Cmd::Shutdown ||
+         c == state::Cmd::FormatSd;
 }
+
+
 
 // ----------------------------------------------------------------- wifi ----
 
 bool gApMode = false;
 uint32_t gLastStaAttempt = 0;
+uint32_t gApStartedAt = 0;
 String gApName;
+bool gOffline = false;      // WiFi switched off to save power
+uint32_t gOnlineSince = 0;  // when BOOT last brought the frame online
+bool gUserOnline = false;   // online because BOOT was pressed (not just to check the album)
 
 void startMdns(const AppConfig& cfg) {
   if (MDNS.begin(cfg.hostname.c_str())) MDNS.addService("http", "tcp", 80);
@@ -213,7 +263,7 @@ void startAccessPoint(const AppConfig& cfg) {
   WiFi.mode(WIFI_AP_STA);
   bool up = WiFi.softAP(name, pass.c_str());
   gApMode = true;
-  gLastStaAttempt = millis();
+  gLastStaAttempt = gApStartedAt = millis();
   const String ip = WiFi.softAPIP().toString();
   state::setAp(true, ip);
   Serial.printf("[wifi] setup AP %s %s (pass %s) at %s\n", name, up ? "up" : "FAILED", pass.c_str(), ip.c_str());
@@ -221,11 +271,19 @@ void startAccessPoint(const AppConfig& cfg) {
   ui::setupScreen(gApName, pass, "http://" + ip, cfg.wifiSsid.length() ? "Could not join " + cfg.wifiSsid : "");
 }
 
-bool connectStation(const AppConfig& cfg) {
-  ui::splash("Connecting to " + cfg.wifiSsid + "...");
+// `quiet`: a photo is on screen, so say it in a small notice instead of the splash.
+bool connectStation(const AppConfig& cfg, bool quiet = false) {
+  if (quiet) {
+    ui::loadingBadge("Connecting to " + cfg.wifiSsid + "...");
+  } else {
+    ui::splash("Connecting to " + cfg.wifiSsid + "...");
+  }
   WiFi.mode(WIFI_STA);
   WiFi.setHostname(cfg.hostname.c_str());
   WiFi.setAutoReconnect(true);
+  // No modem sleep: it slows downloads badly, and with an album on the card
+  // WiFi is switched off altogether as soon as the photos are stored.
+  WiFi.setSleep(false);
   WiFi.begin(cfg.wifiSsid.c_str(), cfg.wifiPass.c_str());
 
   const uint32_t start = millis();
@@ -277,6 +335,9 @@ void serviceAccessPoint(const AppConfig& cfg) {
     state::setAp(false, WiFi.localIP().toString());
     startMdns(cfg);
     setLed(false);
+    gOnlineSince = millis();
+    gHaveShown = false;  // the setup screen is up; show a photo straight away
+    gNextAt = millis();
     return;
   }
   if (WiFi.softAPgetStationNum() == 0 && millis() - gLastStaAttempt > kApRetryStaMs) {
@@ -295,7 +356,6 @@ std::deque<Asset> gHistory;  // oldest first; back() is the newest shown
 size_t gBack = 0;            // 0 = showing the newest, n = n steps back
 
 bool gPaused = false;
-uint32_t gNextAt = 0;
 uint32_t gCfgVersion = 0;
 int gFailures = 0;
 bool gShowingPattern = false;
@@ -549,6 +609,677 @@ void advance(int step, bool requested = false) {
   gNextAt = millis() + (gFailures >= kMaxQuickSkips ? kRetryAfterErrorMs : 1000);
 }
 
+// ---------------------------------------------------- album on SD card ----
+
+// Where the slideshow is in the album. Kept in RTC memory, so it carries on
+// from the same place after a shutdown.
+struct Playlist {
+  uint32_t magic;
+  uint32_t album;  // crc of the album id
+  uint32_t count;  // photos in the album when the order was drawn
+  uint32_t pos;    // position in playing order of the photo on screen
+  uint32_t seed;   // shuffle of this pass
+};
+constexpr uint32_t kPlayMagic = 0x504c4131;
+RTC_DATA_ATTR Playlist gPlay;
+
+// Seconds on the RTC clock (which keeps counting through deep sleep) of the
+// last album check or attempt, for syncHours. Written by both tasks.
+RTC_DATA_ATTR volatile uint32_t gLastSyncTime = 0;
+void markSynced() { gLastSyncTime = (uint32_t)time(nullptr); }
+uint32_t secsSinceSync() { return (uint32_t)time(nullptr) - gLastSyncTime; }
+bool syncDue() { return gCfg.syncHours && secsSinceSync() >= gCfg.syncHours * 3600UL; }
+
+// ---- storing task --------------------------------------------------------
+//
+// A FreeRTOS task on core 1 lists the album and stores its photos on the card
+// while the slideshow (loop(), core 1) keeps showing what is already there.
+// The slideshow never downloads in this mode; it only reads frames.
+//
+//   kSyncRun   set by the slideshow while the task may use WiFi and the card
+//   kSyncIdle  set by the task whenever it is not mid-download or mid-listing
+//
+// The slideshow bumps gSyncGen to make the task start over (list the album
+// again and retry photos that failed); the task reports which generation it
+// has listed and finished.
+constexpr EventBits_t kSyncRun = BIT0;
+constexpr EventBits_t kSyncIdle = BIT1;
+EventGroupHandle_t gSyncEvents;
+std::atomic<uint32_t> gSyncGen{1};
+std::atomic<uint32_t> gListedGen{0}, gDoneGen{0};
+std::atomic<bool> gListChanged{false};  // new album list; the slideshow re-reads it before the task goes on
+
+bool syncRunning() { return xEventGroupGetBits(gSyncEvents) & kSyncRun; }
+bool syncListed() { return gListedGen == gSyncGen; }
+bool syncComplete() { return gDoneGen == gSyncGen; }
+void restartSync() { gSyncGen++; }
+void allowSync(bool on) {
+  if (on) {
+    xEventGroupSetBits(gSyncEvents, kSyncRun);
+  } else {
+    xEventGroupClearBits(gSyncEvents, kSyncRun);
+  }
+}
+
+// Stops the task and waits until it has let go of WiFi and the card.
+void stopSync() {
+  if (!gSyncEvents) return;
+  xEventGroupClearBits(gSyncEvents, kSyncRun);
+  if (!(xEventGroupWaitBits(gSyncEvents, kSyncIdle, pdFALSE, pdTRUE, pdMS_TO_TICKS(30000)) & kSyncIdle))
+    log_w("storing task did not stop");
+}
+
+bool cacheWanted() {
+  return cache::mounted() && gCfg.sdCache && gCfg.source == Source::Album && gCfg.sourceId.length() == 36;
+}
+
+void checkPlaylist() {
+  const uint32_t album = crc32_le(0, (const uint8_t*)gCfg.sourceId.c_str(), gCfg.sourceId.length());
+  const uint32_t n = cache::count();
+  if (gPlay.magic == kPlayMagic && gPlay.album == album && gPlay.count == n && gPlay.pos < max<uint32_t>(n, 1))
+    return;
+  gPlay = {kPlayMagic, album, n, 0, esp_random()};
+}
+
+// Opens or closes the SD copy to match the settings and the screen size.
+void syncCacheState() {
+  if (!cacheWanted()) {
+    if (cache::isOpen()) {
+      stopSync();
+      cache::close();
+    }
+    state::setCache(false, false);
+    return;
+  }
+  if (cache::matches(gCfg.sourceId, tft.width(), tft.height(), gCfg.fill)) return;
+  stopSync();
+  if (cache::open(gCfg.sourceId, tft.width(), tft.height(), gCfg.fill)) {
+    checkPlaylist();
+    restartSync();
+  }
+}
+
+uint32_t mix32(uint32_t x) {
+  x ^= x >> 16;
+  x *= 0x7feb352d;
+  x ^= x >> 15;
+  x *= 0x846ca68b;
+  x ^= x >> 16;
+  return x;
+}
+
+// A random permutation of 0..n-1 that needs no memory: a small Feistel
+// network over the next even power of two, walking until it lands below n.
+size_t shuffled(size_t i, size_t n, uint32_t seed) {
+  if (n < 2) return 0;
+  int bits = 2;
+  while ((1u << bits) < n) bits++;
+  if (bits & 1) bits++;
+  const int half = bits / 2;
+  const uint32_t mask = (1u << half) - 1;
+  uint32_t x = i;
+  do {
+    uint32_t l = x >> half, r = x & mask;
+    for (uint32_t round = 0; round < 4; round++) {
+      const uint32_t t = l ^ (mix32(r ^ seed ^ (round * 0x9e3779b9u)) & mask);
+      l = r;
+      r = t;
+    }
+    x = (l << half) | r;
+  } while (x >= n);
+  return x;
+}
+
+// Album index (oldest first) of the photo at position k (< n) in playing order.
+size_t slotAt(size_t k) {
+  const size_t n = cache::count();
+  switch (gCfg.order) {
+    case Order::Oldest: return k;
+    case Order::Newest: return n - 1 - k;
+    default: return shuffled(k, n, gPlay.seed);
+  }
+}
+
+size_t stepPos(size_t k, int dir, size_t n) {
+  if (dir > 0) {
+    if (++k >= n) {
+      k = 0;
+      gPlay.seed = esp_random();  // a fresh shuffle each pass
+    }
+  } else if (dir < 0) {
+    k = k == 0 ? n - 1 : k - 1;
+  }
+  return k;
+}
+
+void cacheSkip(size_t idx, const String& err) {
+  Asset a;
+  cache::asset(idx, a);
+  log_w("asset %s: %s", a.id, err.c_str());
+  state::setError(String("Skipped ") + a.id + ": " + err);
+  state::countSkipped();
+  cache::markFailed(idx);  // not retried until the frame is next online
+}
+
+// Next photo to store: the first missing one in playing order after the one
+// on screen, so the slideshow rarely has to wait. Runs in the storing task;
+// gPlay belongs to the slideshow, but only its position is read here.
+bool nextMissing(size_t& idx) {
+  const size_t n = cache::count();
+  if (n == 0) return false;
+  size_t k = gPlay.pos % n;
+  for (size_t i = 0; i < n; i++) {
+    k = k + 1 >= n ? 0 : k + 1;
+    const size_t s = slotAt(k);
+    if (!cache::has(s) && !cache::failed(s)) {
+      idx = s;
+      return true;
+    }
+  }
+  return false;
+}
+
+// Decoder callback in the storing task: gives way when told to stop or when
+// the portal wants the connection. FreeRTOS shares core 1 with the slideshow.
+bool abortStoring() { return !syncRunning() || immich::othersWaiting(); }
+
+// Idle for a while, available to stopSync() throughout.
+void syncRest(uint32_t ms) {
+  xEventGroupSetBits(gSyncEvents, kSyncIdle);
+  vTaskDelay(pdMS_TO_TICKS(ms));
+}
+
+void syncTask(void*) {
+  int listFailures = 0;
+  for (;;) {
+    xEventGroupSetBits(gSyncEvents, kSyncIdle);
+    xEventGroupWaitBits(gSyncEvents, kSyncRun, pdFALSE, pdTRUE, portMAX_DELAY);
+    xEventGroupClearBits(gSyncEvents, kSyncIdle);
+    // stopSync() may have cleared kSyncRun while we woke; it only waits for
+    // kSyncIdle, so check again now that we have claimed it.
+    if (!syncRunning() || !cache::isOpen()) continue;
+    if (gListChanged) {
+      syncRest(50);  // the slideshow re-reads the list first
+      continue;
+    }
+
+    const uint32_t gen = gSyncGen;
+    if (gListedGen != gen) {
+      const AppConfig cfg = config::get();
+      String err;
+      bool changed = false;
+      if (cache::refresh(cfg, changed, err)) {
+        listFailures = 0;
+        cache::clearFailed();  // new session: try them again
+        markSynced();
+        if (changed) gListChanged = true;
+        gListedGen = gen;
+      } else if (syncRunning()) {
+        state::setError("Loading the album: " + err);
+        log_w("album list: %s", err.c_str());
+        if (++listFailures >= 3) {  // the server is away; play what's stored and try next time
+          listFailures = 0;
+          markSynced();
+          gListedGen = gen;
+          gDoneGen = gen;
+        } else {
+          syncRest(kRetryAfterErrorMs);
+        }
+      }
+      continue;
+    }
+    if (gDoneGen == gen) {
+      syncRest(500);
+      continue;
+    }
+    if (immich::othersWaiting()) {
+      syncRest(200);  // the portal first
+      continue;
+    }
+
+    size_t idx;
+    if (!nextMissing(idx)) {
+      Serial.printf("[cache] album stored: %u photos\n", cache::info().cached);
+      gDoneGen = gen;
+      continue;
+    }
+    const AppConfig cfg = config::get();
+    String err;
+    bool aborted = false;
+    state::setLoading(true);
+    const uint32_t t0 = millis();
+    const bool ok = cache::store(cfg, idx, abortStoring, err, aborted);
+    state::setLoading(false);
+    if (ok) {
+      const cache::Info ci = cache::info();
+      Serial.printf("[cache] stored %u/%u in %lu ms\n", ci.cached, ci.total, millis() - t0);
+    } else if (aborted) {
+      syncRest(300);
+    } else {
+      Serial.printf("[cache] could not store photo %u: %s\n", (unsigned)idx, err.c_str());
+      cacheSkip(idx, err);
+    }
+  }
+}
+
+void startSyncTask() {
+  gSyncEvents = xEventGroupCreate();
+  xEventGroupSetBits(gSyncEvents, kSyncIdle);
+  // Stack covers a TLS handshake plus the JSON of an album page.
+  // Core 1, next to the slideshow, which sleeps most of the time: the task
+  // gets nearly the whole core for decoding, and WiFi and the portal keep
+  // core 0 to themselves. (Only core 0's idle task is watchdog-checked.)
+  xTaskCreatePinnedToCore(syncTask, "store", 12288, nullptr, 1, nullptr, 1);
+}
+
+void showCacheWaiting() {
+  if (gHaveShown) return;
+  if (gOffline) {
+    showMessageOnce("No photos stored yet", "Press BOOT to go online");
+  } else {
+    showWaiting();
+  }
+}
+
+// Like advance(), for the album on the card: shows only photos already
+// stored. While the rest are still being stored it waits for the next one
+// rather than wrapping round to the start.
+void cacheAdvance(int step, bool requested = false) {
+  gShowingPattern = false;
+  const size_t n = cache::count();
+  const bool storing = !gOffline && !syncComplete();
+  if (n == 0) {
+    showCacheWaiting();
+    gNextAt = millis() + (storing ? 2000 : kRetryAfterErrorMs);
+    return;
+  }
+  if (gPlay.pos >= n) gPlay.pos = 0;
+  size_t k = gPlay.pos;
+  int dir = step;
+  for (size_t tries = 0; tries < n; tries++) {
+    if (dir > 0 && storing && gHaveShown && k + 1 >= n) break;  // the rest are on their way
+    if (dir != 0) k = stepPos(k, dir, n);
+    dir = dir == 0 ? 1 : dir;  // a redraw falls forward past photos it can't show
+    const size_t idx = slotAt(k);
+    if (!cache::has(idx)) continue;
+    String err;
+    // Redraws go straight up; new photos get the transition.
+    const fx::Effect effect = step == 0 ? fx::Effect::None : fx::resolveRows(fx::fromName(gCfg.transition));
+    if (cache::show(tft, idx, err, effect)) {
+      Asset a;
+      cache::asset(idx, a);
+      gPlay.pos = k;
+      gNoticeUntil = 0;
+      gScreenMessage = "";
+      gHaveShown = true;
+      gLoadingShown = false;
+      if (gCfg.showDate) ui::caption(ui::formatDate(a.date));
+      ui::pausedBadge(gPaused);
+      state::setShowing(a.id, a.date);
+      gFailures = 0;
+      gNextAt = millis() + gCfg.intervalSec * 1000UL;
+      return;
+    }
+    log_w("show %u: %s", (unsigned)idx, err.c_str());
+  }
+  if (gHaveShown && storing) {
+    // Keep the photo on screen and look again shortly.
+    if (requested && step != 0) showLoading(step);
+    gNextAt = millis() + 2000;
+    return;
+  }
+  showCacheWaiting();
+  gNextAt = millis() + (storing ? 2000 : kRetryAfterErrorMs);
+}
+
+void redraw() {
+  if (cache::isOpen()) {
+    cacheAdvance(0);
+  } else {
+    advance(0);
+  }
+}
+
+// ------------------------------------------------------------- power ----
+
+constexpr uint32_t kNoticeMs = 6000;
+
+// "Battery 82% - charging", or "" without a battery.
+String batteryLine() {
+  const power::Battery b = power::measureBattery();
+  if (!board::kHasBattery || b.state == power::BatteryState::None || b.percent < 0) return "";
+  String s = "Battery " + String(b.percent) + "%";
+  if (b.state == power::BatteryState::Charging) s += " - charging";
+  else if (b.state == power::BatteryState::Full) s += " - full";
+  return s;
+}
+
+// Says on screen that the portal is reachable, and where.
+void showOnlineBadge() {
+  if (!gHaveShown || gApMode || WiFi.status() != WL_CONNECTED) return;
+  gLoadingShown = true;  // the next photo paints over it
+  ui::notice("Web portal online", "http://" + WiFi.localIP().toString(), "http://" + gCfg.hostname + ".local",
+             batteryLine());
+  gNoticeUntil = millis() + kNoticeMs;
+  if (!gNoticeUntil) gNoticeUntil = 1;
+}
+
+void showBatteryNotice() {
+  const power::Battery b = power::measureBattery();
+  String title, l1, l2;
+  if (!board::kHasBattery || b.state == power::BatteryState::None) {
+    title = "No battery";
+    l1 = "Running on USB power";
+  } else {
+    title = "Battery " + (b.percent >= 0 ? String(b.percent) + "%" : String("?"));
+    l1 = String(b.volts, 2) + " V";
+    if (b.state == power::BatteryState::Charging) l2 = "Charging";
+    else if (b.state == power::BatteryState::Full) l2 = "Full, on USB power";
+    else if (b.state == power::BatteryState::Discharging) l2 = "On battery";
+  }
+  gLoadingShown = true;  // the next photo paints over it
+  ui::notice(title, l1, l2);
+  gNoticeUntil = (millis() + kNoticeMs) | 1;
+}
+
+// Takes the notice down again: a stored photo redraws in a moment. A
+// streamed one would need downloading again, so it waits for the next photo.
+void expireNotice() {
+  if (!gNoticeUntil || (int32_t)(millis() - gNoticeUntil) < 0) return;
+  gNoticeUntil = 0;
+  if (!cache::isOpen() || !gHaveShown) return;
+  const uint32_t due = gNextAt;
+  cacheAdvance(0);
+  gNextAt = due;  // a redraw doesn't restart the photo's time
+}
+
+void wifiOff() {
+  if (WiFi.getMode() == WIFI_OFF) return;
+  MDNS.end();
+  WiFi.disconnect(true, false);
+  WiFi.mode(WIFI_OFF);
+}
+
+void goOffline(const char* why) {
+  if (gOffline || gApMode) return;
+  Serial.printf("[wifi] going offline: %s\n", why);
+  stopSync();
+  wifiOff();
+  gOffline = true;
+  gUserOnline = false;
+  if (!syncListed()) markSynced();  // the next scheduled check counts from now
+  state::setAp(false, "");
+}
+
+// Brings WiFi back for the portal and an album check. `user`: BOOT was
+// pressed, so open the setup network if the saved one can't be joined.
+void goOnline(bool user) {
+  if (user) {
+    gOnlineSince = millis();
+    gUserOnline = true;
+  }
+  if (!gOffline) {
+    if (user) showOnlineBadge();  // already online: just say where
+    return;
+  }
+  Serial.printf("[wifi] going online (%s)\n", user ? "BOOT" : "album check");
+  const bool ok = gCfg.wifiSsid.length() && connectStation(gCfg, gHaveShown);
+  if (ok) {
+    gOffline = false;
+    restartSync();
+    state::setAp(false, WiFi.localIP().toString());
+    startMdns(gCfg);
+    showOnlineBadge();
+    return;
+  }
+  if (user || cache::info().cached == 0) {
+    gOffline = false;
+    startAccessPoint(gCfg);
+    portal::setApMode(true);
+    return;
+  }
+  wifiOff();  // try again at the next scheduled check
+  markSynced();
+  if (gHaveShown) cacheAdvance(0);  // clear the "Connecting" notice
+}
+
+// Back to the stored album once it is complete and the portal has gone quiet.
+void maybeGoOffline() {
+  if (cache::info().cached == 0 || portal::setupActive()) return;
+  const bool connected = WiFi.status() == WL_CONNECTED;
+  if (connected && !syncComplete()) return;  // still storing
+  if (gUserOnline && since(gOnlineSince) < kOnlineIdleMs) return;  // BOOT was pressed to use the portal
+  if (portal::lastActivity() && since(portal::lastActivity()) < kPortalIdleMs) return;  // in use
+  goOffline(connected ? "album stored" : "WiFi lost");
+}
+
+// The setup network was opened (BOOT with the saved WiFi out of reach) but
+// nobody joined it: give up and play the stored album.
+void maybeLeaveAp() {
+  if (!cache::isOpen() || cache::info().cached == 0 || portal::setupActive()) return;
+  if (WiFi.softAPgetStationNum() > 0) gApStartedAt = millis();
+  if (min(since(gApStartedAt), since(portal::lastActivity())) < kApIdleMs) return;
+  Serial.println("[wifi] setup network unused; back to the stored album");
+  WiFi.softAPdisconnect(true);
+  gApMode = false;
+  portal::setApMode(false);
+  wifiOff();
+  gOffline = true;
+  markSynced();
+  state::setAp(false, "");
+  gHaveShown = false;
+  gNextAt = millis();
+}
+
+bool inputBusy() {
+  return since(gLastInputAt) < kInputQuietMs || gBootTapAt || gBtnBoot.down || gBtnBoot.raw || gBtn1.down || gBtn2.down ||
+         gTouchDown || gTouchCandidate || state::peek() != state::Cmd::None;
+}
+
+// ------------------------------------------------------- power saver ----
+
+// Kept through deep sleep: when the next photo is due (RTC clock, ms) and
+// whether the slideshow is paused.
+RTC_DATA_ATTR int64_t gNextDueMs = 0;
+RTC_DATA_ATTR bool gSaverPaused = false;
+
+int64_t wallMs() {
+  timeval tv;
+  gettimeofday(&tv, nullptr);
+  return (int64_t)tv.tv_sec * 1000 + tv.tv_usec / 1000;
+}
+
+bool cacheUsable() { return cache::isOpen() && cache::info().cached > 0; }
+
+// Deep sleep with the photo on screen until the next photo, the next album
+// check, BOOT or a touch.
+[[noreturn]] void sleepUntilNextPhoto() {
+  uint32_t ms = 0;  // 0 = no timer
+  if (!gPaused) ms = max<int32_t>((int32_t)(gNextAt - millis()), 50);
+  if (gCfg.syncHours) {
+    const uint32_t syncSecs = gCfg.syncHours * 3600UL, done = secsSinceSync();
+    const uint32_t toSync = done < syncSecs ? (syncSecs - done) * 1000 : 50;
+    ms = ms ? min(ms, toSync) : toSync;
+  }
+  gNextDueMs = wallMs() + (int32_t)(gNextAt - millis());
+  gSaverPaused = gPaused;
+  stopSync();
+  wifiOff();
+  power::saverSleep(ms, true);
+}
+
+// Offline in the loop: once nothing needs the chip awake, sleep.
+void offlineIdle() {
+  if (syncDue()) return goOnline(false);
+  if (inputBusy() || gNoticeUntil) {  // a press being read, or a notice up
+    delay(10);
+    return;
+  }
+  if (!gPaused && (int32_t)(gNextAt - millis()) <= 0) return;  // the loop shows the next photo first
+  sleepUntilNextPhoto();
+}
+
+// BOOT pressed while online: WiFi off now and power saver from here on.
+void enterSaver() {
+  if (!cacheUsable()) {
+    showOnlineBadge();  // nothing stored to play offline: stay online
+    return;
+  }
+  if (gApMode) {
+    WiFi.softAPdisconnect(true);
+    gApMode = false;
+    portal::setApMode(false);
+  }
+  goOffline("power saver (BOOT)");
+  gOffline = true;
+  if (gHaveShown) {
+    ui::notice("Power saver", "WiFi off - press BOOT to go online");
+    delay(1500);
+    const uint32_t due = gNextAt;
+    cacheAdvance(0);
+    gNextAt = due;
+  } else {
+    gNextAt = millis();
+  }
+}
+
+[[noreturn]] void powerOff() {
+  Serial.println("[power] shutting down");
+  stopSync();
+  wifiOff();
+  cache::close();
+  tft.fillScreen(TFT_BLACK);
+  tft.writecommand(0x28);  // DISPOFF
+  tft.writecommand(0x10);  // SLPIN: the panel drops to microamps
+  delay(120);
+  power::shutdown();
+}
+
+[[noreturn]] void shutdownNow() {
+  gScreenMessage = "";
+  ui::message("Shutting down", "Press BOOT to start again");
+  while (digitalRead(kPinBoot) == LOW) delay(10);  // a held button would wake it at once
+  delay(300);
+  powerOff();
+}
+
+// ---- battery protection ----
+constexpr int kLowBatteryPct = 5;
+RTC_DATA_ATTR uint8_t gLowStrikes = 0;  // low readings in a row (WiFi bursts dip the cell briefly)
+uint32_t gLastBatteryCheck = 0;
+
+// Nearly flat and not on the charger.
+bool batteryCritical(int& pct) {
+  if (!board::kHasBattery) return false;
+  const power::Battery b = power::measureBattery();
+  pct = b.percent;
+  return b.percent >= 0 && b.percent < kLowBatteryPct && b.state != power::BatteryState::Charging &&
+         b.state != power::BatteryState::Full && b.state != power::BatteryState::None;
+}
+
+// The charge-me screen for a few seconds, then off. BOOT then shows it
+// again until the charger is connected.
+[[noreturn]] void lowBatteryOff(int pct) {
+  Serial.printf("[power] battery at %d%%: shutting down\n", pct);
+  gLowStrikes = 0;
+  stopSync();
+  wifiOff();
+  ui::lowBattery(pct);
+  delay(3000);
+  powerOff();
+}
+
+// `strikes`: low readings in a row needed before shutting down.
+void checkBattery(int strikes) {
+  int pct = -1;
+  if (!batteryCritical(pct)) {
+    gLowStrikes = 0;
+    return;
+  }
+  log_w("battery low: %d%% (%u)", pct, gLowStrikes + 1);
+  if (++gLowStrikes >= strikes) lowBatteryOff(pct);
+}
+
+// ---- woken from power saver ----
+
+// What a touch did, read straight after waking (the finger is often still down).
+void touchWake() {
+  uint16_t x = 0, y = 0;
+  bool located = false;
+  for (const uint32_t t0 = millis(); since(t0) < 250; delay(15)) {
+    if (gTouchCalibrated ? tft.getTouch(&x, &y) : rawTouchPressed()) {
+      located = gTouchCalibrated;
+      break;
+    }
+  }
+  if (located && x < tft.width() / 3) {
+    cacheAdvance(-1, true);
+  } else if (located && x <= tft.width() * 2 / 3) {
+    gPaused = !gPaused;
+    ui::pausedBadge(gPaused);
+    if (!gPaused) gNextAt = millis() + 1500;
+  } else {
+    cacheAdvance(1, true);
+  }
+  // Wait for the finger to lift, so the touch doesn't wake us straight away.
+  for (const uint32_t t0 = millis(); since(t0) < 2000 && digitalRead(board::kPinTouchIrq) == LOW;) delay(10);
+}
+
+// Woken from power saver: the photo is still on screen and WiFi is off. Does
+// what woke the frame and sleeps again. Returns only to go online: true for
+// a BOOT press, false for the scheduled album check.
+bool saverWakeup(power::Boot boot) {
+  gOffline = true;
+  gHaveShown = true;
+  gPaused = gSaverPaused;
+  gNextAt = millis() + (uint32_t)max<int64_t>(0, gNextDueMs - wallMs());
+
+  if (boot == power::Boot::SaverButton) {
+    // Hold: shut down. Double tap: battery. Single tap: online.
+    for (const uint32_t t0 = millis(); digitalRead(kPinBoot) == LOW; delay(10))
+      if (since(t0) >= kShutdownHoldMs) shutdownNow();
+    bool second = false;
+    for (const uint32_t t0 = millis(); since(t0) < kDoubleTapMs && !second; delay(5))
+      second = digitalRead(kPinBoot) == LOW;
+    if (!second) return true;
+    while (digitalRead(kPinBoot) == LOW) delay(10);
+    showBatteryNotice();
+    delay(kNoticeMs);
+    const uint32_t due = gNextAt;
+    cacheAdvance(0);
+    gNextAt = due;
+  } else if (boot == power::Boot::SaverTouch) {
+    touchWake();
+  }
+
+  if (syncDue()) return false;
+  if (!gPaused && (int32_t)(millis() - gNextAt) >= 0) cacheAdvance(1);
+  sleepUntilNextPhoto();
+}
+
+// Loop body while the album plays from the SD card.
+void cacheLoop() {
+  const bool connected = !gOffline && WiFi.status() == WL_CONNECTED;
+  allowSync(connected);
+  state::setCache(true, connected && !syncComplete());
+  if (gListChanged) {  // the storing task has a new album list
+    checkPlaylist();
+    gListChanged = false;
+  }
+  expireNotice();
+
+  if (!gPaused && (int32_t)(millis() - gNextAt) >= 0) {
+    cacheAdvance(gHaveShown ? 1 : 0);
+  } else if (gOffline) {
+    offlineIdle();
+    return;
+  } else {
+    maybeGoOffline();
+    if (connected && syncComplete()) maybeRoam(gCfg);  // a scan would stall a download
+  }
+  delay(gOffline ? 0 : 10);
+}
+
 void calibrateTouch() {
   gScreenMessage = "";
   ui::message("Touch calibration", "Touch each corner arrow as it appears");
@@ -564,17 +1295,27 @@ void calibrateTouch() {
   gCfg = cfg;
   ui::message("Calibrated", "Left: prev  Mid: pause  Right: next");
   delay(1500);
-  advance(0);
+  redraw();
 }
 
 void handleCommands() {
   for (state::Cmd cmd = state::take(); cmd != state::Cmd::None; cmd = state::take()) {
     switch (cmd) {
       case state::Cmd::Next:
-        if (!gApMode) advance(1, true);
+        if (gApMode) break;
+        if (cache::isOpen()) {
+          cacheAdvance(1, true);
+        } else {
+          advance(1, true);
+        }
         break;
       case state::Cmd::Prev:
-        if (!gApMode) advance(-1, true);
+        if (gApMode) break;
+        if (cache::isOpen()) {
+          cacheAdvance(-1, true);
+        } else {
+          advance(-1, true);
+        }
         break;
       case state::Cmd::TogglePause:
         gPaused = !gPaused;
@@ -587,7 +1328,41 @@ void handleCommands() {
         break;
       case state::Cmd::Reload:
         resetSlideshow();
+        restartSync();  // and check the album again
         break;
+      case state::Cmd::GoOnline:
+        if (gOffline) {
+          goOnline(true);
+        } else {
+          enterSaver();  // online already: BOOT turns the power saver on
+        }
+        break;
+      case state::Cmd::ShowBattery:
+        showBatteryNotice();
+        break;
+      case state::Cmd::GoOffline:
+        if (cache::isOpen() && cache::info().cached > 0) {
+          delay(500);  // let the HTTP response go out
+          goOffline("asked in the portal");
+        } else {
+          state::setError("Nothing stored on the SD card yet, so the frame stays online");
+        }
+        break;
+      case state::Cmd::Shutdown:
+        delay(500);
+        shutdownNow();
+        break;
+      case state::Cmd::FormatSd: {
+        delay(500);
+        gScreenMessage = "";
+        ui::message("Formatting SD card", "This takes a few seconds");
+        stopSync();
+        const bool ok = cache::format();
+        if (!ok) state::setError("Formatting the SD card failed");
+        resetSlideshow();
+        syncCacheState();
+        break;
+      }
       case state::Cmd::TestPattern:
         ui::testPattern();
         gLoadingShown = false;
@@ -635,13 +1410,15 @@ void applyConfigChanges() {
 
   const bool sourceChanged = next.source != gCfg.source || next.sourceId != gCfg.sourceId ||
                              next.order != gCfg.order || next.serverUrl != gCfg.serverUrl ||
-                             next.apiKey != gCfg.apiKey;
+                             next.apiKey != gCfg.apiKey || next.sdCache != gCfg.sdCache;
   const bool lookChanged = next.fill != gCfg.fill || next.showDate != gCfg.showDate;
   const bool rotated = next.rotation != gCfg.rotation;
   const bool colorChanged = next.colorBgr != gCfg.colorBgr || next.colorInvert != gCfg.colorInvert;
   const bool intervalChanged = next.intervalSec != gCfg.intervalSec;
   const String prevTransition = gCfg.transition;
   gCfg = next;
+
+  power::setBacklight(gCfg.backlight);
 
   const bool transitionChanged = next.transition != prevTransition;
   if (rotated || lookChanged || transitionChanged) dropReady(true);  // decoded for the old settings
@@ -651,12 +1428,13 @@ void applyConfigChanges() {
     if (rotated) gTouchCalibrated = false;
     gScreenMessage = "";
   }
+  syncCacheState();  // album, scaling or screen size may have changed
   if (gShowingPattern && (rotated || colorChanged)) {
     ui::testPattern();  // keep the pattern up while colours are being tuned
   } else if (sourceChanged) {
     resetSlideshow();
   } else if (rotated || colorChanged || lookChanged) {
-    advance(0);
+    redraw();
   } else if (intervalChanged) {
     gNextAt = millis() + gCfg.intervalSec * 1000UL;
   }
@@ -665,23 +1443,27 @@ void applyConfigChanges() {
 }  // namespace
 
 void setup() {
+  power::releaseSleepHolds();
+  const power::Boot wake = power::bootReason();
+  const bool saver = power::saverWake(wake);
   Serial.begin(115200);
-  Serial.printf("[boot] Immich Frame %s on %s\n", FW_VERSION, board::kName);
+  static const char* const kWhy[] = {"", " (woken by BOOT)", " (saver: next photo)", " (saver: BOOT)",
+                                     " (saver: touch)"};
+  Serial.printf("[boot] Immich Frame %s on %s%s\n", FW_VERSION, board::kName, kWhy[(int)wake]);
 
   pinMode(board::kPinSdCs, OUTPUT);
   digitalWrite(board::kPinSdCs, HIGH);
-  pinMode(board::kPinLed, OUTPUT);
-  setLed(false);
-  for (int pin : board::kPinLedOff) {
-    if (pin < 0) continue;
-    pinMode(pin, OUTPUT);
-    digitalWrite(pin, board::kLedActiveHigh ? LOW : HIGH);
-  }
   if (board::kHasButtons) {
     pinMode(kPinBtn1, INPUT);  // GPIO36/39 are input-only with no internal pull-ups
     pinMode(kPinBtn2, INPUT);
   }
   pinMode(kPinBoot, INPUT_PULLUP);
+  if (board::kPinTouchIrq >= 0) pinMode(board::kPinTouchIrq, INPUT);
+  // The press that woke the frame from shutdown is not a "go online" press.
+  if (power::wokeFromShutdown()) {
+    while (digitalRead(kPinBoot) == LOW) delay(10);
+    delay(50);
+  }
 
   config::begin();
   state::begin();
@@ -689,14 +1471,22 @@ void setup() {
   gCfg = config::get();
   gCfgVersion = config::version();
 
-  ui::begin(gCfg.rotation, gCfg.colorBgr, gCfg.colorInvert);
+  if (saver) {
+    ui::attach(gCfg.rotation, gCfg.colorBgr, gCfg.colorInvert);  // the photo stays up
+  } else {
+    ui::begin(gCfg.rotation, gCfg.colorBgr, gCfg.colorInvert);
+  }
+  power::begin(gCfg.backlight);
   if (gCfg.touchCalValid) {
     tft.setTouch(gCfg.touchCal);
     gTouchCalibrated = true;
   }
+  // Too flat to run: the charge-me screen, then off. A saver wake-up wants a
+  // second low reading first; a start (WiFi not on yet) reads true at once.
+  checkBattery(saver ? 2 : 1);
 
   // Holding both buttons while powering up wipes all settings.
-  if (board::kHasButtons && digitalRead(kPinBtn1) == LOW && digitalRead(kPinBtn2) == LOW) {
+  if (!saver && board::kHasButtons && digitalRead(kPinBtn1) == LOW && digitalRead(kPinBtn2) == LOW) {
     ui::message("Factory reset?", "Keep holding both buttons for 3 s", "", "", TFT_RED);
     uint32_t start = millis();
     while (digitalRead(kPinBtn1) == LOW && digitalRead(kPinBtn2) == LOW) {
@@ -720,7 +1510,36 @@ void setup() {
   if (forceSetup) boot.remove("setup");
   boot.end();
 
-  if (!forceSetup && gCfg.wifiSsid.length() && connectStation(gCfg)) {
+  startSyncTask();
+  // The frame claims its card the first time it sees it.
+  if (cache::begin() == cache::Card::NeedsFormat) {
+    ui::splash("Preparing the SD card...");
+    if (!cache::format()) state::setError("Could not format the SD card");
+  }
+  syncCacheState();
+  gOnlineSince = millis();
+
+  if (saver && cacheUsable()) {
+    const bool user = saverWakeup(wake);  // sleeps again unless going online
+    power::takeBacklight();
+    goOnline(user);
+    portal::begin(gApMode);
+    return;
+  }
+  if (saver) power::takeBacklight();  // card gone: start normally
+
+  bool startOffline = false;
+  if (!forceSetup && cache::isOpen() && cache::info().cached > 0) {
+    // Straight from the card, then online in the background of the photo.
+    cacheAdvance(0);
+    if (gCfg.wifiSsid.length() && connectStation(gCfg, true)) {
+      state::setAp(false, WiFi.localIP().toString());
+      startMdns(gCfg);
+      showOnlineBadge();
+    } else {
+      startOffline = true;
+    }
+  } else if (!forceSetup && gCfg.wifiSsid.length() && connectStation(gCfg)) {
     state::setAp(false, WiFi.localIP().toString());
     startMdns(gCfg);
     ui::splashStatus("Connected - " + WiFi.localIP().toString(), TFT_GREEN);
@@ -731,18 +1550,30 @@ void setup() {
   }
 
   portal::begin(gApMode);
+  if (startOffline) {
+    goOffline("saved WiFi not reachable");
+    markSynced();
+    if (gHaveShown) cacheAdvance(0);  // clear the "Connecting" notice
+  }
 }
 
 void loop() {
   pollInputs();
   handleCommands();
   applyConfigChanges();
+  if (since(gLastBatteryCheck) >= 30000) {
+    gLastBatteryCheck = millis();
+    checkBattery(3);
+  }
 
   if (gApMode) {
     serviceAccessPoint(gCfg);
+    maybeLeaveAp();
     delay(10);
     return;
   }
+  if (cache::isOpen()) return cacheLoop();
+  if (gOffline) return goOnline(false);  // no stored album to play any more
 
   if (gCfg.serverUrl.isEmpty() || gCfg.apiKey.isEmpty()) {
     showMessageOnce("Almost there", "Open http://" + WiFi.localIP().toString(), "to set Immich server + key",

@@ -37,6 +37,9 @@ void toJson(const AppConfig& c, JsonDocument& d) {
   d["swapButtons"] = c.swapButtons;
   d["colorBgr"] = c.colorBgr;
   d["colorInvert"] = c.colorInvert;
+  d["backlight"] = c.backlight;
+  d["sdCache"] = c.sdCache;
+  d["syncHours"] = c.syncHours;
   d["adminPass"] = c.adminPass;
   d["touchCalValid"] = c.touchCalValid;
   JsonArray cal = d["touchCal"].to<JsonArray>();
@@ -62,6 +65,9 @@ void fromJson(const JsonDocument& d, AppConfig& c) {
   c.swapButtons = d["swapButtons"] | c.swapButtons;
   c.colorBgr = d["colorBgr"] | c.colorBgr;
   c.colorInvert = d["colorInvert"] | c.colorInvert;
+  c.backlight = d["backlight"] | c.backlight;
+  c.sdCache = d["sdCache"] | c.sdCache;
+  c.syncHours = d["syncHours"] | c.syncHours;
   c.adminPass = d["adminPass"] | c.adminPass;
   c.touchCalValid = d["touchCalValid"] | c.touchCalValid;
   JsonArrayConst cal = d["touchCal"];

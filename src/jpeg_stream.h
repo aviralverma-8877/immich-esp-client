@@ -3,6 +3,8 @@
 #include <Arduino.h>
 #include <TFT_eSPI.h>
 
+#include <functional>
+
 namespace jpeg {
 
 // Polled between decoded blocks; return true to stop drawing early.
@@ -18,5 +20,15 @@ using AbortFn = bool (*)();
 // is never touched; the caller reveals the result with a transition.
 bool draw(TFT_eSPI& tft, Stream& in, int len, bool fill, AbortFn abort, String& err, bool& aborted,
           bool& touched, bool toBuffer = false);
+
+// Receives `rows` full-width rows starting at `y`, top to bottom, every row of
+// the screen exactly once (letterbox bars as black). Pixels are RGB565 in
+// panel byte order, ready for pushImage() with swapBytes off.
+using RowSink = std::function<bool(int y, int rows, const uint16_t* px)>;
+
+// Like draw(), but scales to a scrW x scrH frame handed to `sink` instead of
+// the panel. Needs about scrW * 40 bytes of heap for one row of JPEG blocks.
+bool decode(Stream& in, int len, int scrW, int scrH, bool fill, AbortFn abort, const RowSink& sink, String& err,
+            bool& aborted);
 
 }  // namespace jpeg
